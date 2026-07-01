@@ -60,6 +60,29 @@ public sealed class AppConfig
             f.Enabled && string.Equals(f.Alias, alias, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Returns human-readable problems that should block a save, currently: two or more
+    /// enabled formats sharing the same REST port (each needs its own port to listen).
+    /// </summary>
+    public List<string> ValidateFormats()
+    {
+        var errors = new List<string>();
+
+        var dupePorts = LabelFormats
+            .Where(f => f.Enabled)
+            .GroupBy(f => f.Port)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key);
+
+        foreach (var port in dupePorts)
+        {
+            var sizes = string.Join(", ", LabelFormats.Where(f => f.Enabled && f.Port == port).Select(f => f.Size));
+            errors.Add($"端口 {port} 被多个启用的尺寸占用（{sizes}）。每个启用的尺寸需要不同的端口。");
+        }
+
+        return errors;
+    }
+
     public static AppConfig Load()
     {
         var builder = new ConfigurationBuilder()

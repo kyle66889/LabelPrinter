@@ -127,6 +127,16 @@ public partial class SettingsForm : Form
     private void BtnSave_Click(object? sender, EventArgs e)
     {
         ApplyUiToConfig();
+
+        var errors = _config.ValidateFormats();
+        if (errors.Count > 0)
+        {
+            var msg = string.Join(Environment.NewLine, errors);
+            AppendLog($"Save blocked: {msg}");
+            MessageBox.Show(this, msg, "配置有误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         ConfigSaved?.Invoke(_config);
         AppendLog("Settings saved.");
         MessageBox.Show(this, "已保存并重新连接。", "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Information);

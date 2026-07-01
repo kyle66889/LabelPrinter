@@ -86,4 +86,38 @@ public class AppConfigTests
         Assert.Null(config.FindFormatByAlias("nope"));
         Assert.Null(config.FindFormatByAlias("4x6")); // disabled
     }
+
+    [Fact]
+    public void ValidateFormats_returns_no_errors_for_distinct_enabled_ports()
+    {
+        var config = new AppConfig { LabelFormats = AppConfig.CreateDefaultFormats() };
+
+        var errors = config.ValidateFormats();
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void ValidateFormats_flags_duplicate_port_among_enabled_formats()
+    {
+        var config = new AppConfig { LabelFormats = AppConfig.CreateDefaultFormats() };
+        config.LabelFormats[0].Port = config.LabelFormats[1].Port; // 4x2 and 4x3 collide
+
+        var errors = config.ValidateFormats();
+
+        Assert.Single(errors);
+        Assert.Contains(config.LabelFormats[1].Port.ToString(), errors[0]);
+    }
+
+    [Fact]
+    public void ValidateFormats_ignores_port_collisions_on_disabled_formats()
+    {
+        var config = new AppConfig { LabelFormats = AppConfig.CreateDefaultFormats() };
+        config.LabelFormats[0].Enabled = false;
+        config.LabelFormats[0].Port = config.LabelFormats[1].Port; // collision but 4x2 disabled
+
+        var errors = config.ValidateFormats();
+
+        Assert.Empty(errors);
+    }
 }
