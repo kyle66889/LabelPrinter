@@ -42,13 +42,13 @@ public static class RawPrinterHelper
     [DllImport("winspool.drv", SetLastError = true)]
     private static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
 
-    public static void SendStringToPrinter(string printerName, string data)
+    public static void SendStringToPrinter(string printerName, string data, string dataType = "RAW")
     {
         var bytes = Encoding.ASCII.GetBytes(data);
-        SendBytesToPrinter(printerName, bytes);
+        SendBytesToPrinter(printerName, bytes, dataType);
     }
 
-    public static void SendBytesToPrinter(string printerName, byte[] bytes)
+    public static void SendBytesToPrinter(string printerName, byte[] bytes, string dataType = "RAW")
     {
         if (string.IsNullOrWhiteSpace(printerName))
             throw new InvalidOperationException("Printer name is not configured.");
@@ -61,7 +61,7 @@ public static class RawPrinterHelper
             var di = new DOCINFOW
             {
                 pDocName = "ControlCode Label",
-                pDataType = "RAW"
+                pDataType = dataType
             };
 
             if (!StartDocPrinter(hPrinter, 1, ref di))

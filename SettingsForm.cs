@@ -134,7 +134,7 @@ public partial class SettingsForm : Form
         var sample = SampleLabelGenerator.Generate(type, row.Size);
         try
         {
-            new PrintModel().PrintTo(sample, printerName);
+            new PrintModel().PrintTo(sample, printerName, type);
             AppendLog($"Test [{row.Size}/{type}] sent to {printerName}.");
         }
         catch (Exception ex)

@@ -136,7 +136,7 @@ public sealed class WebSocketPrintListener : IAsyncDisposable
                     try
                     {
                         _log($"Received LabelPrint job for {format.Size}.");
-                        _printModel.PrintTo(printMsg.EplData, format.PrinterName);
+                        _printModel.PrintTo(printMsg.EplData, format.PrinterName, format.PrintType);
                         _log($"Print job sent to {format.PrinterName}.");
                     }
                     catch (Exception ex)

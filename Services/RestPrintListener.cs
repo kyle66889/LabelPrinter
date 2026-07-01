@@ -123,7 +123,7 @@ public sealed class RestPrintListener : IDisposable
                 return;
             }
 
-            _printModel.PrintTo(data, _format.PrinterName);
+            _printModel.PrintTo(data, _format.PrinterName, _format.PrintType);
             _log($"REST [{_format.Size}] job completed.");
             WriteResponse(ctx, 200, "OK");
         }
