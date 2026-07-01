@@ -1,20 +1,68 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using LabelPrinter.Printing;
 using Microsoft.Extensions.Configuration;
 
 namespace LabelPrinter;
 
 public sealed class AppConfig
 {
+    // --- Global settings (persisted) ---
     public string LabelPrinterUrl { get; set; } = "ws://localhost:2012/websocket";
+    public bool EnableWebSocket { get; set; } = true;
+    public bool AllowLanAccess { get; set; }
+    public int ReconnectDelaySeconds { get; set; } = 5;
+    public int WebSocketConnectTimeoutSeconds { get; set; } = 10;
+    public bool RunAtStartup { get; set; }
+
+    public List<LabelFormat> LabelFormats { get; set; } = new();
+
+    // --- Legacy fields: only read for migration, never written by Save() ---
     public string PrinterName { get; set; } = "";
     public string PrinterAlias { get; set; } = "";
     public bool UseLptPrinter { get; set; }
     public string LptPort { get; set; } = "LPT1";
-    public string RestListenPrefix { get; set; } = "http://localhost:8721/";
+    public string RestListenPrefix { get; set; } = "";
     public bool EnableRestEndpoint { get; set; } = true;
-    public bool EnableWebSocket { get; set; } = true;
-    public int ReconnectDelaySeconds { get; set; } = 5;
-    public int WebSocketConnectTimeoutSeconds { get; set; } = 10;
+
+    public static List<LabelFormat> CreateDefaultFormats() => new()
+    {
+        new LabelFormat { Size = "4x2", Alias = "4x2", Port = 48210, PrintType = LabelPrintType.Epl, Enabled = true },
+        new LabelFormat { Size = "4x3", Alias = "4x3", Port = 48211, PrintType = LabelPrintType.Epl, Enabled = true },
+        new LabelFormat { Size = "4x6", Alias = "4x6", Port = 48212, PrintType = LabelPrintType.Epl, Enabled = true, IsDefault = true }
+    };
+
+    /// <summary>
+    /// Ensures LabelFormats is populated. If empty (e.g. loading an old config file),
+    /// seeds the three defaults and folds the legacy single-printer settings into the
+    /// default (4x6) format.
+    /// </summary>
+    public void MigrateLegacy()
+    {
+        if (LabelFormats.Count > 0)
+            return;
+
+        LabelFormats = CreateDefaultFormats();
+        var def = LabelFormats.Single(f => f.IsDefault);
+
+        if (UseLptPrinter && !string.IsNullOrWhiteSpace(LptPort))
+            def.PrinterName = LptPort.Trim();
+        else if (!string.IsNullOrWhiteSpace(PrinterName))
+            def.PrinterName = PrinterName.Trim();
+    }
+
+    public LabelFormat? FindFormatByAlias(string? alias)
+    {
+        if (string.IsNullOrWhiteSpace(alias))
+            return null;
+
+        return LabelFormats.FirstOrDefault(f =>
+            f.Enabled && string.Equals(f.Alias, alias, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // Legacy shim: kept ONLY so the pre-refactor PrintModel keeps compiling
+    // between this task and Task 5. Task 5 deletes this method.
+    public string ResolvePrinterName(string? aliasFromMessage) => PrinterName;
 
     public static AppConfig Load()
     {
@@ -25,19 +73,8 @@ public sealed class AppConfig
         var root = builder.Build();
         var config = new AppConfig();
         root.GetSection("LabelPrinter").Bind(config);
+        config.MigrateLegacy();
         return config;
-    }
-
-    public string ResolvePrinterName(string? aliasFromMessage)
-    {
-        if (!string.IsNullOrWhiteSpace(aliasFromMessage)
-            && !string.IsNullOrWhiteSpace(PrinterAlias)
-            && string.Equals(aliasFromMessage, PrinterAlias, StringComparison.OrdinalIgnoreCase))
-        {
-            return PrinterName;
-        }
-
-        return PrinterName;
     }
 
     public void Save()
@@ -48,22 +85,29 @@ public sealed class AppConfig
             ["LabelPrinter"] = new Dictionary<string, object?>
             {
                 ["LabelPrinterUrl"] = LabelPrinterUrl,
-                ["PrinterName"] = PrinterName,
-                ["PrinterAlias"] = PrinterAlias,
-                ["UseLptPrinter"] = UseLptPrinter,
-                ["LptPort"] = LptPort,
-                ["RestListenPrefix"] = RestListenPrefix,
-                ["EnableRestEndpoint"] = EnableRestEndpoint,
                 ["EnableWebSocket"] = EnableWebSocket,
+                ["AllowLanAccess"] = AllowLanAccess,
                 ["ReconnectDelaySeconds"] = ReconnectDelaySeconds,
                 ["WebSocketConnectTimeoutSeconds"] = WebSocketConnectTimeoutSeconds,
-                ["RunAtStartup"] = RunAtStartup
+                ["RunAtStartup"] = RunAtStartup,
+                ["LabelFormats"] = LabelFormats.Select(f => new Dictionary<string, object?>
+                {
+                    ["Size"] = f.Size,
+                    ["Alias"] = f.Alias,
+                    ["PrinterName"] = f.PrinterName,
+                    ["PrintType"] = f.PrintType.ToString(),
+                    ["Port"] = f.Port,
+                    ["Enabled"] = f.Enabled,
+                    ["IsDefault"] = f.IsDefault
+                }).ToList()
             }
         };
 
-        var json = JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(path, json);
+        var options = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(root, options));
     }
-
-    public bool RunAtStartup { get; set; }
 }
