@@ -42,14 +42,14 @@ partial class SettingsForm
         // txtWsUrl
         //
         txtWsUrl.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        txtWsUrl.Location = new Point(110, 42);
-        txtWsUrl.Size = new Size(680, 23);
+        txtWsUrl.Location = new Point(170, 42);
+        txtWsUrl.Size = new Size(674, 23);
         //
         // chkEnableWebSocket
         //
-        chkEnableWebSocket.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        chkEnableWebSocket.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         chkEnableWebSocket.AutoSize = true;
-        chkEnableWebSocket.Location = new Point(800, 44);
+        chkEnableWebSocket.Location = new Point(110, 44);
         chkEnableWebSocket.Text = "启用";
         chkEnableWebSocket.CheckedChanged += (_, _) => txtWsUrl.Enabled = chkEnableWebSocket.Checked;
         //
