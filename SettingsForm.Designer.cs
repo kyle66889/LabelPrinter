@@ -14,139 +14,112 @@ partial class SettingsForm
 
     private void InitializeComponent()
     {
-        lblPrinter = new Label();
-        cboPrinter = new ComboBox();
+        lblHost = new Label();
         lblWsUrl = new Label();
         txtWsUrl = new TextBox();
         chkEnableWebSocket = new CheckBox();
-        chkEnableRest = new CheckBox();
-        chkUseLpt = new CheckBox();
-        txtLptPort = new TextBox();
+        tlpFormats = new TableLayoutPanel();
         chkRunAtStartup = new CheckBox();
+        chkAllowLan = new CheckBox();
         btnSave = new Button();
-        btnTestEpl = new Button();
-        txtLog = new TextBox();
         lblLog = new Label();
+        txtLog = new TextBox();
         SuspendLayout();
-        // 
-        // lblPrinter
-        // 
-        lblPrinter.AutoSize = true;
-        lblPrinter.Location = new Point(16, 18);
-        lblPrinter.Name = "lblPrinter";
-        lblPrinter.Size = new Size(47, 15);
-        lblPrinter.Text = "Printer:";
-        // 
-        // cboPrinter
-        // 
-        cboPrinter.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        cboPrinter.DropDownStyle = ComboBoxStyle.DropDownList;
-        cboPrinter.Location = new Point(120, 14);
-        cboPrinter.Size = new Size(392, 23);
-        cboPrinter.SelectedIndexChanged += (_, _) => { if (cboPrinter.SelectedItem is string n) _config.PrinterName = n; };
-        // 
+        //
+        // lblHost
+        //
+        lblHost.AutoSize = true;
+        lblHost.Location = new Point(16, 16);
+        lblHost.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        lblHost.Text = "本机地址: ...";
+        //
         // lblWsUrl
-        // 
+        //
         lblWsUrl.AutoSize = true;
-        lblWsUrl.Location = new Point(16, 52);
-        lblWsUrl.Name = "lblWsUrl";
-        lblWsUrl.Size = new Size(95, 15);
-        lblWsUrl.Text = "WebSocket URL:";
-        // 
+        lblWsUrl.Location = new Point(16, 46);
+        lblWsUrl.Text = "WebSocket:";
+        //
         // txtWsUrl
-        // 
+        //
         txtWsUrl.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        txtWsUrl.Location = new Point(120, 48);
-        txtWsUrl.Size = new Size(392, 23);
-        // 
+        txtWsUrl.Location = new Point(110, 42);
+        txtWsUrl.Size = new Size(360, 23);
+        //
         // chkEnableWebSocket
-        // 
+        //
+        chkEnableWebSocket.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         chkEnableWebSocket.AutoSize = true;
-        chkEnableWebSocket.Location = new Point(120, 82);
-        chkEnableWebSocket.Text = "Enable WebSocket";
+        chkEnableWebSocket.Location = new Point(482, 44);
+        chkEnableWebSocket.Text = "启用";
         chkEnableWebSocket.CheckedChanged += (_, _) => txtWsUrl.Enabled = chkEnableWebSocket.Checked;
-        // 
-        // chkEnableRest
-        // 
-        chkEnableRest.AutoSize = true;
-        chkEnableRest.Location = new Point(280, 82);
-        chkEnableRest.Text = "Enable REST";
-        // 
-        // chkUseLpt
-        // 
-        chkUseLpt.AutoSize = true;
-        chkUseLpt.Location = new Point(120, 110);
-        chkUseLpt.Text = "Use LPT port";
-        chkUseLpt.CheckedChanged += (_, _) =>
-        {
-            txtLptPort.Enabled = chkUseLpt.Checked;
-            cboPrinter.Enabled = !chkUseLpt.Checked;
-        };
-        // 
-        // txtLptPort
-        // 
-        txtLptPort.Enabled = false;
-        txtLptPort.Location = new Point(230, 108);
-        txtLptPort.PlaceholderText = "LPT1";
-        txtLptPort.Size = new Size(80, 23);
-        // 
+        //
+        // tlpFormats
+        //
+        tlpFormats.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        tlpFormats.Location = new Point(16, 76);
+        tlpFormats.Size = new Size(556, 132);
+        tlpFormats.ColumnCount = 7;
+        tlpFormats.RowCount = 1;
+        tlpFormats.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48F));   // default radio
+        tlpFormats.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48F));   // size
+        tlpFormats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));   // printer
+        tlpFormats.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70F));   // type
+        tlpFormats.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72F));   // port
+        tlpFormats.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52F));   // enabled
+        tlpFormats.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64F));   // test
+        //
         // chkRunAtStartup
-        // 
+        //
         chkRunAtStartup.AutoSize = true;
-        chkRunAtStartup.Location = new Point(120, 138);
-        chkRunAtStartup.Text = "开机自动启动（登录时）";
-        // 
+        chkRunAtStartup.Location = new Point(16, 220);
+        chkRunAtStartup.Text = "开机自启";
+        //
+        // chkAllowLan
+        //
+        chkAllowLan.AutoSize = true;
+        chkAllowLan.Location = new Point(110, 220);
+        chkAllowLan.Text = "允许局域网访问 (需管理员)";
+        //
         // btnSave
-        // 
+        //
         btnSave.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnSave.Location = new Point(416, 168);
+        btnSave.Location = new Point(476, 214);
         btnSave.Size = new Size(96, 28);
         btnSave.Text = "保存并应用";
         btnSave.Click += BtnSave_Click;
-        // 
-        // btnTestEpl
-        // 
-        btnTestEpl.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnTestEpl.Location = new Point(304, 168);
-        btnTestEpl.Size = new Size(96, 28);
-        btnTestEpl.Text = "Test EPL";
-        btnTestEpl.Click += BtnTestEpl_Click;
-        // 
+        //
         // lblLog
-        // 
+        //
         lblLog.AutoSize = true;
-        lblLog.Location = new Point(16, 208);
+        lblLog.Location = new Point(16, 252);
         lblLog.Text = "Log:";
-        // 
+        //
         // txtLog
-        // 
+        //
         txtLog.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         txtLog.Font = new Font("Consolas", 9F);
-        txtLog.Location = new Point(16, 228);
+        txtLog.Location = new Point(16, 272);
         txtLog.Multiline = true;
         txtLog.ReadOnly = true;
         txtLog.ScrollBars = ScrollBars.Vertical;
-        txtLog.Size = new Size(496, 160);
-        // 
+        txtLog.Size = new Size(556, 150);
+        //
         // SettingsForm
-        // 
+        //
         AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
-        ClientSize = new Size(528, 406);
+        ClientSize = new Size(588, 440);
         Controls.Add(txtLog);
         Controls.Add(lblLog);
-        Controls.Add(btnTestEpl);
         Controls.Add(btnSave);
+        Controls.Add(chkAllowLan);
         Controls.Add(chkRunAtStartup);
-        Controls.Add(txtLptPort);
-        Controls.Add(chkUseLpt);
-        Controls.Add(chkEnableRest);
+        Controls.Add(tlpFormats);
         Controls.Add(chkEnableWebSocket);
         Controls.Add(txtWsUrl);
         Controls.Add(lblWsUrl);
-        Controls.Add(cboPrinter);
-        Controls.Add(lblPrinter);
-        MinimumSize = new Size(480, 380);
+        Controls.Add(lblHost);
+        MinimumSize = new Size(560, 420);
         Name = "SettingsForm";
         StartPosition = FormStartPosition.CenterScreen;
         Text = "ControlCode Label Printer - 设置";
@@ -155,17 +128,14 @@ partial class SettingsForm
         PerformLayout();
     }
 
-    private Label lblPrinter;
-    private ComboBox cboPrinter;
+    private Label lblHost;
     private Label lblWsUrl;
     private TextBox txtWsUrl;
     private CheckBox chkEnableWebSocket;
-    private CheckBox chkEnableRest;
-    private CheckBox chkUseLpt;
-    private TextBox txtLptPort;
+    private TableLayoutPanel tlpFormats;
     private CheckBox chkRunAtStartup;
+    private CheckBox chkAllowLan;
     private Button btnSave;
-    private Button btnTestEpl;
-    private TextBox txtLog;
     private Label lblLog;
+    private TextBox txtLog;
 }

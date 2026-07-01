@@ -1,12 +1,15 @@
 using System.Drawing.Printing;
 using LabelPrinter.Printing;
+using LabelPrinter.Services;
 
 namespace LabelPrinter;
 
 public partial class SettingsForm : Form
 {
-    private AppConfig _config;
+    private readonly AppConfig _config;
     private readonly PrintHostService _host;
+    private readonly List<FormatRow> _rows = new();
+    private readonly List<string> _printerChoices = new();
 
     public event Action<AppConfig>? ConfigSaved;
 
@@ -21,28 +24,104 @@ public partial class SettingsForm : Form
 
     private void LoadUi()
     {
+        lblHost.Text = $"本机地址: {NetworkHelper.GetLocalIPv4()}";
+
         foreach (string name in PrinterSettings.InstalledPrinters)
-            cboPrinter.Items.Add(name);
-
-        if (!string.IsNullOrWhiteSpace(_config.PrinterName))
-        {
-            var idx = cboPrinter.Items.IndexOf(_config.PrinterName);
-            if (idx >= 0)
-                cboPrinter.SelectedIndex = idx;
-        }
-
-        if (cboPrinter.SelectedIndex < 0 && cboPrinter.Items.Count > 0)
-            cboPrinter.SelectedIndex = 0;
+            _printerChoices.Add(name);
+        _printerChoices.Add("LPT1");
+        _printerChoices.Add("LPT2");
+        _printerChoices.Add("LPT3");
 
         txtWsUrl.Text = _config.LabelPrinterUrl;
         chkEnableWebSocket.Checked = _config.EnableWebSocket;
-        chkEnableRest.Checked = _config.EnableRestEndpoint;
-        chkUseLpt.Checked = _config.UseLptPrinter;
-        txtLptPort.Text = _config.LptPort;
-        chkRunAtStartup.Checked = _config.RunAtStartup;
         txtWsUrl.Enabled = chkEnableWebSocket.Checked;
-        txtLptPort.Enabled = chkUseLpt.Checked;
-        cboPrinter.Enabled = !chkUseLpt.Checked;
+        chkRunAtStartup.Checked = _config.RunAtStartup;
+        chkAllowLan.Checked = _config.AllowLanAccess;
+
+        BuildHeaderRow();
+        foreach (var format in _config.LabelFormats)
+            AddFormatRow(format);
+    }
+
+    private void BuildHeaderRow()
+    {
+        string[] headers = { "默认", "尺寸", "打印机", "类型", "端口", "启用", "" };
+        for (var col = 0; col < headers.Length; col++)
+        {
+            var lbl = new Label
+            {
+                Text = headers[col],
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(3, 3, 3, 3)
+            };
+            tlpFormats.Controls.Add(lbl, col, 0);
+        }
+    }
+
+    private void AddFormatRow(LabelFormat format)
+    {
+        var rowIndex = tlpFormats.RowCount;
+        tlpFormats.RowCount = rowIndex + 1;
+        tlpFormats.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+
+        var rdoDefault = new RadioButton { AutoSize = true, Checked = format.IsDefault, Anchor = AnchorStyles.Left };
+        var lblSize = new Label { Text = format.Size, AutoSize = true, Anchor = AnchorStyles.Left };
+
+        var cboPrinter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left | AnchorStyles.Right, Width = 200 };
+        foreach (var choice in _printerChoices)
+            cboPrinter.Items.Add(choice);
+        var idx = cboPrinter.Items.IndexOf(format.PrinterName);
+        if (idx < 0 && !string.IsNullOrEmpty(format.PrinterName))
+            idx = cboPrinter.Items.Add(format.PrinterName); // keep an unknown/offline printer selectable
+        cboPrinter.SelectedIndex = idx >= 0 ? idx : (cboPrinter.Items.Count > 0 ? 0 : -1);
+
+        var cboType = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left, Width = 64 };
+        cboType.Items.AddRange(new object[] { "EPL", "ZPL", "文本" });
+        cboType.SelectedIndex = (int)format.PrintType;
+
+        var numPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Math.Clamp(format.Port, 1, 65535), Anchor = AnchorStyles.Left, Width = 66 };
+
+        var chkEnabled = new CheckBox { Checked = format.Enabled, AutoSize = true, Anchor = AnchorStyles.Left };
+
+        var btnTest = new Button { Text = "测试", Anchor = AnchorStyles.Left, Width = 56 };
+
+        var row = new FormatRow(format.Size, rdoDefault, lblSize, cboPrinter, cboType, numPort, chkEnabled, btnTest);
+        btnTest.Click += (_, _) => TestRow(row);
+        _rows.Add(row);
+
+        tlpFormats.Controls.Add(rdoDefault, 0, rowIndex);
+        tlpFormats.Controls.Add(lblSize, 1, rowIndex);
+        tlpFormats.Controls.Add(cboPrinter, 2, rowIndex);
+        tlpFormats.Controls.Add(cboType, 3, rowIndex);
+        tlpFormats.Controls.Add(numPort, 4, rowIndex);
+        tlpFormats.Controls.Add(chkEnabled, 5, rowIndex);
+        tlpFormats.Controls.Add(btnTest, 6, rowIndex);
+    }
+
+    private void TestRow(FormatRow row)
+    {
+        ApplyUiToConfig();
+        var printerName = (string?)row.Printer.SelectedItem ?? "";
+        if (string.IsNullOrWhiteSpace(printerName))
+        {
+            MessageBox.Show(this, "请先为该尺寸选择打印机。", "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var type = (LabelPrintType)row.Type.SelectedIndex;
+        var sample = SampleLabelGenerator.Generate(type, row.Size);
+        try
+        {
+            new PrintModel().PrintTo(sample, printerName);
+            AppendLog($"Test [{row.Size}/{type}] sent to {printerName}.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Test [{row.Size}] failed: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "Print Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void BtnSave_Click(object? sender, EventArgs e)
@@ -53,39 +132,22 @@ public partial class SettingsForm : Form
         MessageBox.Show(this, "已保存并重新连接。", "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
-    private void BtnTestEpl_Click(object? sender, EventArgs e)
-    {
-        ApplyUiToConfig();
-        const string sampleEpl = """
-            N
-            D15
-            Q200,20
-            A20,20,0,4,1,1,N,"Test"
-            P1
-            """;
-
-        try
-        {
-            new PrintModel(_config).PrintBarcode(sampleEpl);
-            AppendLog("EPL test sent.");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"EPL test failed: {ex.Message}");
-            MessageBox.Show(this, ex.Message, "Print Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
     private void ApplyUiToConfig()
     {
-        if (cboPrinter.SelectedItem is string name)
-            _config.PrinterName = name;
         _config.LabelPrinterUrl = txtWsUrl.Text.Trim();
         _config.EnableWebSocket = chkEnableWebSocket.Checked;
-        _config.EnableRestEndpoint = chkEnableRest.Checked;
-        _config.UseLptPrinter = chkUseLpt.Checked;
-        _config.LptPort = string.IsNullOrWhiteSpace(txtLptPort.Text) ? "LPT1" : txtLptPort.Text.Trim();
         _config.RunAtStartup = chkRunAtStartup.Checked;
+        _config.AllowLanAccess = chkAllowLan.Checked;
+
+        foreach (var row in _rows)
+        {
+            var format = _config.LabelFormats.First(f => f.Size == row.Size);
+            format.PrinterName = (string?)row.Printer.SelectedItem ?? "";
+            format.PrintType = (LabelPrintType)row.Type.SelectedIndex;
+            format.Port = (int)row.Port.Value;
+            format.Enabled = row.Enabled.Checked;
+            format.IsDefault = row.Default.Checked;
+        }
     }
 
     private void AppendLog(string message)
@@ -113,4 +175,14 @@ public partial class SettingsForm : Form
         _host.LogMessage -= AppendLog;
         base.OnFormClosed(e);
     }
+
+    private sealed record FormatRow(
+        string Size,
+        RadioButton Default,
+        Label SizeLabel,
+        ComboBox Printer,
+        ComboBox Type,
+        NumericUpDown Port,
+        CheckBox Enabled,
+        Button Test);
 }
