@@ -126,9 +126,17 @@ public sealed class WebSocketPrintListener : IAsyncDisposable
             var message = builder.ToString();
             if (LabelPrintMessageParser.TryParse(message, out var printMsg))
             {
-                _log("Received LabelPrint job.");
-                _printModel.PrintBarcode(printMsg.EplData, printMsg.PrinterAlias);
-                _log("Print job sent to printer.");
+                var format = _config.FindFormatByAlias(printMsg.PrinterAlias);
+                if (format == null)
+                {
+                    _log($"No enabled label format matches alias '{printMsg.PrinterAlias ?? "(none)"}'. Skipped.");
+                }
+                else
+                {
+                    _log($"Received LabelPrint job for {format.Size}.");
+                    _printModel.PrintTo(printMsg.EplData, format.PrinterName);
+                    _log($"Print job sent to {format.PrinterName}.");
+                }
             }
             else if (!string.IsNullOrWhiteSpace(message))
             {
