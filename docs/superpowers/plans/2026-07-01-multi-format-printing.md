@@ -77,6 +77,16 @@ Run:
 rm "LabelPrinter.Tests/UnitTest1.cs"
 ```
 
+- [ ] **Step 3b: Exclude the test project from the main project's globs**
+
+The test project lives *inside* the main project's directory, so `LabelPrinter.csproj`'s default `**/*.cs` glob would pull the test project's generated `obj` files (and, later, its test sources) into the main compile — causing duplicate-assembly-attribute errors and xunit-reference failures. Add a `DefaultItemExcludes` line to `LabelPrinter.csproj`'s `<PropertyGroup>` (right after the `<Description>` line):
+
+```xml
+    <DefaultItemExcludes>$(DefaultItemExcludes);LabelPrinter.Tests\**</DefaultItemExcludes>
+```
+
+Do **not** disable `GenerateAssemblyInfo` — that only masks half the problem.
+
 - [ ] **Step 4: Verify it builds and runs (zero tests)**
 
 Run:
