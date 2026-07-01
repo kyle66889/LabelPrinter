@@ -2,33 +2,32 @@ namespace LabelPrinter.Printing;
 
 public sealed class PrintModel
 {
-    private readonly AppConfig _config;
-
-    public PrintModel(AppConfig config) => _config = config;
-
     /// <summary>
-    /// Prints one or more EPL label command blocks. Server may send multiple labels separated by blank lines.
+    /// Prints one or more label command blocks to a specific target. The target is
+    /// either a Windows printer name or a parallel port ("LPT1".."LPT3"). The server
+    /// may send multiple labels separated by blank lines; each is sent as one job.
     /// </summary>
-    public void PrintBarcode(string eplData, string? printerAlias = null)
+    public void PrintTo(string data, string printerName)
     {
-        if (string.IsNullOrWhiteSpace(eplData))
-            throw new ArgumentException("EPL data is empty.", nameof(eplData));
+        if (string.IsNullOrWhiteSpace(data))
+            throw new ArgumentException("Print data is empty.", nameof(data));
+        if (string.IsNullOrWhiteSpace(printerName))
+            throw new InvalidOperationException("No printer is configured for this label size.");
 
-        foreach (var block in SplitEplJobs(eplData))
+        var isLpt = printerName.TrimStart().StartsWith("LPT", StringComparison.OrdinalIgnoreCase);
+
+        foreach (var block in SplitJobs(data))
         {
-            if (_config.UseLptPrinter)
-                LptPrinter.Print(_config.LptPort, block);
+            if (isLpt)
+                LptPrinter.Print(printerName, block);
             else
-            {
-                var printer = _config.ResolvePrinterName(printerAlias);
-                RawPrinterHelper.SendStringToPrinter(printer, block);
-            }
+                RawPrinterHelper.SendStringToPrinter(printerName, block);
         }
     }
 
-    private static IEnumerable<string> SplitEplJobs(string eplData)
+    private static IEnumerable<string> SplitJobs(string data)
     {
-        var normalized = eplData.Replace("\r\n", "\n").Trim();
+        var normalized = data.Replace("\r\n", "\n").Trim();
         if (string.IsNullOrEmpty(normalized))
             yield break;
 

@@ -6,36 +6,52 @@ using LabelPrinter.Printing;
 namespace LabelPrinter.Services;
 
 /// <summary>
-/// Local HTTP endpoint: POST /LabelPrint with raw EPL body or JSON { "epl": "...", "alias": "..." }.
+/// Local HTTP endpoint for ONE label size: POST /LabelPrint with a raw label body
+/// or JSON { "epl": "..." }. The bound port already selects the target printer, so
+/// the request body's printer is implicit.
 /// </summary>
 public sealed class RestPrintListener : IDisposable
 {
-    private readonly AppConfig _config;
+    private readonly LabelFormat _format;
+    private readonly bool _allowLan;
     private readonly PrintModel _printModel;
     private readonly Action<string> _log;
     private HttpListener? _listener;
     private CancellationTokenSource? _cts;
     private Task? _task;
 
-    public RestPrintListener(AppConfig config, PrintModel printModel, Action<string> log)
+    public RestPrintListener(LabelFormat format, bool allowLan, PrintModel printModel, Action<string> log)
     {
-        _config = config;
+        _format = format;
+        _allowLan = allowLan;
         _printModel = printModel;
         _log = log;
     }
 
     public void Start()
     {
-        if (!_config.EnableRestEndpoint)
-            return;
-
         Stop();
+        var host = _allowLan ? "+" : "localhost";
+        var prefix = $"http://{host}:{_format.Port}/";
+
         _listener = new HttpListener();
-        _listener.Prefixes.Add(_config.RestListenPrefix);
-        _listener.Start();
+        _listener.Prefixes.Add(prefix);
+        try
+        {
+            _listener.Start();
+        }
+        catch (HttpListenerException ex)
+        {
+            _log($"REST [{_format.Size}] failed to listen on {prefix}: {ex.Message}. " +
+                 "If 'Allow LAN access' is on, run as administrator or add a urlacl " +
+                 $"(netsh http add urlacl url={prefix} user=Everyone).");
+            _listener = null;
+            return;
+        }
+
         _cts = new CancellationTokenSource();
         _task = Task.Run(() => ListenAsync(_cts.Token));
-        _log($"REST listening on {_config.RestListenPrefix}LabelPrint");
+        _log($"REST [{_format.Size}] listening on {prefix}LabelPrint -> {_format.PrinterName}");
     }
 
     public void Stop()
@@ -63,11 +79,10 @@ public sealed class RestPrintListener : IDisposable
     {
         while (!token.IsCancellationRequested && _listener is { IsListening: true })
         {
-            HttpListenerContext? ctx = null;
             try
             {
-                ctx = await _listener.GetContextAsync().WaitAsync(token).ConfigureAwait(false);
-                _ = Task.Run(() => HandleRequestAsync(ctx), token);
+                var ctx = await _listener.GetContextAsync().WaitAsync(token).ConfigureAwait(false);
+                _ = Task.Run(() => HandleRequest(ctx), token);
             }
             catch (OperationCanceledException)
             {
@@ -75,12 +90,12 @@ public sealed class RestPrintListener : IDisposable
             }
             catch (Exception ex)
             {
-                _log($"REST listener error: {ex.Message}");
+                _log($"REST [{_format.Size}] listener error: {ex.Message}");
             }
         }
     }
 
-    private void HandleRequestAsync(HttpListenerContext ctx)
+    private void HandleRequest(HttpListenerContext ctx)
     {
         try
         {
@@ -94,34 +109,27 @@ public sealed class RestPrintListener : IDisposable
 
             using var reader = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding);
             var body = reader.ReadToEnd();
-            string epl;
-            string? alias = null;
+            string data = body;
 
             if (ctx.Request.ContentType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
             {
                 var doc = JsonDocument.Parse(body);
-                epl = doc.RootElement.GetProperty("epl").GetString() ?? "";
-                if (doc.RootElement.TryGetProperty("alias", out var aliasEl))
-                    alias = aliasEl.GetString();
-            }
-            else
-            {
-                epl = body;
+                data = doc.RootElement.GetProperty("epl").GetString() ?? "";
             }
 
-            if (string.IsNullOrWhiteSpace(epl))
+            if (string.IsNullOrWhiteSpace(data))
             {
-                WriteResponse(ctx, 400, "EPL body is required.");
+                WriteResponse(ctx, 400, "Label body is required.");
                 return;
             }
 
-            _printModel.PrintBarcode(epl, alias);
-            _log("REST LabelPrint job completed.");
+            _printModel.PrintTo(data, _format.PrinterName);
+            _log($"REST [{_format.Size}] job completed.");
             WriteResponse(ctx, 200, "OK");
         }
         catch (Exception ex)
         {
-            _log($"REST print failed: {ex.Message}");
+            _log($"REST [{_format.Size}] print failed: {ex.Message}");
             WriteResponse(ctx, 500, ex.Message);
         }
     }

@@ -7,7 +7,7 @@ public sealed class PrintHostService : IDisposable
 {
     private AppConfig _config = null!;
     private PrintModel? _printModel;
-    private RestPrintListener? _restListener;
+    private readonly List<RestPrintListener> _restListeners = new();
     private WebSocketPrintListener? _webSocketListener;
 
     public event Action<string>? LogMessage;
@@ -18,13 +18,14 @@ public sealed class PrintHostService : IDisposable
     {
         Stop();
         _config = config;
-        _printModel = new PrintModel(_config);
+        _printModel = new PrintModel();
         void Log(string msg) => LogMessage?.Invoke(msg);
 
-        if (_config.EnableRestEndpoint)
+        foreach (var format in _config.LabelFormats.Where(f => f.Enabled))
         {
-            _restListener = new RestPrintListener(_config, _printModel, Log);
-            _restListener.Start();
+            var listener = new RestPrintListener(format, _config.AllowLanAccess, _printModel, Log);
+            listener.Start();
+            _restListeners.Add(listener);
         }
 
         if (_config.EnableWebSocket)
@@ -33,7 +34,8 @@ public sealed class PrintHostService : IDisposable
             _webSocketListener.Start();
         }
 
-        LogMessage?.Invoke($"Running. Printer={(_config.UseLptPrinter ? _config.LptPort : _config.PrinterName)}");
+        var ports = string.Join(", ", _config.LabelFormats.Where(f => f.Enabled).Select(f => $"{f.Size}:{f.Port}"));
+        LogMessage?.Invoke($"Running. Ports: {ports}");
     }
 
     public void Restart(AppConfig config) => Start(config);
@@ -43,8 +45,11 @@ public sealed class PrintHostService : IDisposable
         if (_webSocketListener != null)
             _webSocketListener.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _webSocketListener = null;
-        _restListener?.Dispose();
-        _restListener = null;
+
+        foreach (var listener in _restListeners)
+            listener.Dispose();
+        _restListeners.Clear();
+
         _printModel = null;
     }
 
