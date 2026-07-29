@@ -1,5 +1,6 @@
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using LabelPrinter.Printing;
@@ -8,27 +9,17 @@ namespace LabelPrinter.Services;
 
 /// <summary>
 /// Stands in for a real C-Lodop install so an existing caller (MZL's `lodop_print.js`,
-/// which loads `http://localhost:8000/CLodopfuncs.js` — with `18000` as its own built-in
-/// fallback — and then calls `LODOP.ADD_PRINT_PDF(...); LODOP.PRINT();`) can print PDFs
-/// through LabelPrinter with zero changes on the caller's side.
-///
-/// Only the tiny slice of the real C-Lodop JS API that caller actually uses is
-/// implemented: getCLodop/SET_LICENSES/ADD_PRINT_PDF/SET_PRINTER_INDEX/PRINT. This does
-/// NOT replicate C-Lodop's real wire protocol (WebSocket / iframe-post) — the JS this
-/// class serves is entirely our own, so it can call back to our own /lodop_print endpoint
-/// however we like; the caller only ever sees the LODOP.* JS surface.
-///
-/// Ports 8000 and 18000 are hardcoded in the caller's `lodop_print.js` (not configurable
-/// there), so they are fixed here too — not exposed as a user-editable setting. A real
-/// C-Lodop install must be uninstalled first so these ports are free.
+/// which loads `http://localhost:8000/CLodopfuncs.js` — with `18000` as fallback — or
+/// on https pages `https://localhost.lodop.net:8443` / `8444`) can print PDFs through
+/// LabelPrinter with zero changes on the caller's side.
 /// </summary>
 public sealed class LodopCompatListener : IDisposable
 {
     private const int PrimaryPort = 8000;
     private const int FallbackPort = 18000;
+    private const int HttpsPrimaryPort = 8443;
+    private const int HttpsFallbackPort = 8444;
 
-    // Real shipping-label PDFs are small; this just stops a pathological/misbehaving
-    // response from ballooning memory. Matches RestPrintListener's body cap.
     private const long MaxPdfBytes = 10L * 1024 * 1024;
     private const long MaxRequestBodyBytes = 8 * 1024;
 
@@ -38,9 +29,13 @@ public sealed class LodopCompatListener : IDisposable
     private readonly PrintModel _printModel;
     private readonly Action<string> _log;
     private readonly List<Port> _ports = new();
+    private readonly List<LodopLoopbackHttpsServer> _httpsServers = new();
+    private readonly List<int> _httpsPorts = new();
+    private X509Certificate2? _httpsCert;
 
-    /// <summary>Ports this instance actually managed to bind (empty if both were taken).</summary>
-    public IReadOnlyList<int> BoundPorts => _ports.Select(p => p.Number).ToList();
+    /// <summary>HTTP + HTTPS ports this instance managed to bind.</summary>
+    public IReadOnlyList<int> BoundPorts =>
+        _ports.Select(p => p.Number).Concat(_httpsPorts).ToList();
 
     public LodopCompatListener(LodopCompatConfig config, PrintModel printModel, Action<string> log)
     {
@@ -52,31 +47,22 @@ public sealed class LodopCompatListener : IDisposable
     public void Start()
     {
         Stop();
-        // Two independent HttpListener instances, not one with two Prefixes: a single
-        // HttpListener.Start() fails entirely if ANY of its prefixes can't bind, so
-        // sharing one instance would mean a busy 8000 also kills 18000. Binding
-        // separately means whichever port is free still works.
         StartOne(PrimaryPort);
         StartOne(FallbackPort);
+        StartHttps(HttpsPrimaryPort);
+        StartHttps(HttpsFallbackPort);
+        if (_httpsCert is not null)
+            LodopCompatCertificate.EnsureTrustedRootAsync(_httpsCert, _log);
 
-        if (_ports.Count == 0)
-            _log("Lodop-compat: failed to bind both 8000 and 18000 — feature is unavailable.");
+        if (_ports.Count == 0 && _httpsPorts.Count == 0)
+            _log("Lodop-compat: failed to bind HTTP (8000/18000) and HTTPS (8443/8444) — feature is unavailable.");
     }
 
-    // A just-stopped listener (ours from a moment ago — Save & Apply / Reconnect calls
-    // Stop() then immediately Start() again — or a previous run of this same process)
-    // can leave the OS a moment behind: HttpListener.Close() returns before the port is
-    // necessarily free to rebind. Observed in practice: an immediate restart failed to
-    // bind BOTH 8000 and 18000 even though nothing else was using them a second later.
-    // Retry briefly instead of giving up on the first attempt.
     private const int MaxBindAttempts = 4;
     private static readonly TimeSpan BindRetryDelay = TimeSpan.FromMilliseconds(300);
 
     private void StartOne(int port)
     {
-        // A failed Start() leaves that HttpListener instance unusable (it throws
-        // ObjectDisposedException on a subsequent Start(), confirmed empirically) — each
-        // retry attempt needs a brand new instance, not another Start() on the same one.
         HttpListener? listener = null;
         for (var attempt = 1; attempt <= MaxBindAttempts; attempt++)
         {
@@ -109,6 +95,27 @@ public sealed class LodopCompatListener : IDisposable
         _log($"Lodop-compat: listening on http://localhost:{port} -> {_config.PrinterName}");
     }
 
+    private void StartHttps(int port)
+    {
+        try
+        {
+            _httpsCert ??= LodopCompatCertificate.GetOrCreate(_log);
+            var server = new LodopLoopbackHttpsServer(
+                port,
+                _httpsCert,
+                exchange => Dispatch(exchange, port, https: true),
+                _log);
+            server.Start();
+            _httpsServers.Add(server);
+            _httpsPorts.Add(port);
+            _log($"Lodop-compat: listening on https://{LodopCompatCertificate.HostName}:{port} -> {_config.PrinterName}");
+        }
+        catch (Exception ex)
+        {
+            _log($"Lodop-compat: failed to listen on https {port}: {ex.Message}");
+        }
+    }
+
     public void Stop()
     {
         foreach (var p in _ports)
@@ -116,20 +123,19 @@ public sealed class LodopCompatListener : IDisposable
             p.Cts.Cancel();
             if (p.Listener.IsListening)
                 p.Listener.Stop();
-            try
-            {
-                p.Task.Wait(TimeSpan.FromSeconds(2));
-            }
-            catch
-            {
-                // ignore on shutdown
-            }
-
+            try { p.Task.Wait(TimeSpan.FromSeconds(2)); } catch { /* ignore */ }
             p.Listener.Close();
             p.Cts.Dispose();
         }
 
         _ports.Clear();
+
+        foreach (var s in _httpsServers)
+            s.Dispose();
+        _httpsServers.Clear();
+        _httpsPorts.Clear();
+        // Do not Dispose _httpsCert — it lives in CurrentUser\My; disposing breaks the key handle.
+        _httpsCert = null;
     }
 
     private async Task ListenAsync(HttpListener listener, int port, CancellationToken token)
@@ -139,7 +145,7 @@ public sealed class LodopCompatListener : IDisposable
             try
             {
                 var ctx = await listener.GetContextAsync().WaitAsync(token).ConfigureAwait(false);
-                _ = Task.Run(() => HandleRequest(ctx, port), token);
+                _ = Task.Run(() => HandleHttpListenerRequest(ctx, port), token);
             }
             catch (OperationCanceledException)
             {
@@ -152,64 +158,102 @@ public sealed class LodopCompatListener : IDisposable
         }
     }
 
-    private void HandleRequest(HttpListenerContext ctx, int port)
+    private void HandleHttpListenerRequest(HttpListenerContext ctx, int port)
     {
         try
         {
-            if (ctx.Request.HttpMethod.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+            string? body = null;
+            var bodyTooLarge = false;
+            if (ctx.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
             {
-                WriteCors(ctx.Response);
-                ctx.Response.StatusCode = 200;
-                ctx.Response.Close();
-                return;
+                if (!TryReadRequestBody(ctx, MaxRequestBodyBytes, out body))
+                    bodyTooLarge = true;
             }
 
-            var path = ctx.Request.Url?.AbsolutePath ?? "/";
+            var exchange = new LodopHttpExchange(
+                ctx.Request.HttpMethod,
+                ctx.Request.Url?.AbsolutePath ?? "/",
+                ctx.Request.Headers["Origin"],
+                body,
+                bodyTooLarge);
 
-            if (ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase)
-                && (path == "/" || path.Equals("/CLodopfuncs.js", StringComparison.OrdinalIgnoreCase)))
-            {
-                WriteText(ctx, 200, "application/javascript; charset=utf-8", BuildClodopFuncsJs(port));
-                return;
-            }
-
-            if (ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase)
-                && path.Equals("/_test_sample.pdf", StringComparison.OrdinalIgnoreCase))
-            {
-                WriteBytes(ctx, 200, "application/pdf", GetSamplePdfBytes());
-                return;
-            }
-
-            if (ctx.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase)
-                && path.Equals("/lodop_print", StringComparison.OrdinalIgnoreCase))
-            {
-                HandlePrint(ctx, port);
-                return;
-            }
-
-            WriteText(ctx, 404, "text/plain; charset=utf-8", "Not Found");
+            var result = Dispatch(exchange, port, https: false);
+            WriteCors(ctx.Request, ctx.Response);
+            ctx.Response.StatusCode = result.StatusCode;
+            ctx.Response.ContentType = result.ContentType;
+            ctx.Response.ContentLength64 = result.Body.Length;
+            if (result.Body.Length > 0)
+                ctx.Response.OutputStream.Write(result.Body, 0, result.Body.Length);
+            ctx.Response.Close();
         }
         catch (Exception ex)
         {
             _log($"Lodop-compat [{port}] request failed: {ex.Message}");
             try
             {
-                WriteText(ctx, 500, "text/plain; charset=utf-8", ex.Message);
+                var err = Encoding.UTF8.GetBytes(ex.Message);
+                WriteCors(ctx.Request, ctx.Response);
+                ctx.Response.StatusCode = 500;
+                ctx.Response.ContentType = "text/plain; charset=utf-8";
+                ctx.Response.ContentLength64 = err.Length;
+                ctx.Response.OutputStream.Write(err, 0, err.Length);
+                ctx.Response.Close();
             }
             catch
             {
-                // response already closed/client gone; nothing more to do
+                // response already closed
             }
         }
     }
 
-    private void HandlePrint(HttpListenerContext ctx, int port)
+    private LodopHttpResult Dispatch(LodopHttpExchange exchange, int port, bool https)
+    {
+        try
+        {
+            if (exchange.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+                return LodopHttpResult.Empty(204);
+
+            if (exchange.BodyTooLarge)
+                return LodopHttpResult.Text(413, "text/plain; charset=utf-8", "Request body too large.");
+
+            var path = exchange.Path;
+
+            if (exchange.Method.Equals("GET", StringComparison.OrdinalIgnoreCase)
+                && (path == "/" || path.Equals("/CLodopfuncs.js", StringComparison.OrdinalIgnoreCase)))
+            {
+                return LodopHttpResult.Text(
+                    200,
+                    "application/javascript; charset=utf-8",
+                    BuildClodopFuncsJs(port, https));
+            }
+
+            if (exchange.Method.Equals("GET", StringComparison.OrdinalIgnoreCase)
+                && path.Equals("/_test_sample.pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                return LodopHttpResult.Bytes(200, "application/pdf", GetSamplePdfBytes());
+            }
+
+            if (exchange.Method.Equals("POST", StringComparison.OrdinalIgnoreCase)
+                && path.Equals("/lodop_print", StringComparison.OrdinalIgnoreCase))
+            {
+                return HandlePrint(exchange.Body ?? "", port);
+            }
+
+            return LodopHttpResult.Text(404, "text/plain; charset=utf-8", "Not Found");
+        }
+        catch (Exception ex)
+        {
+            _log($"Lodop-compat [{port}] request failed: {ex.Message}");
+            return LodopHttpResult.Text(500, "text/plain; charset=utf-8", ex.Message);
+        }
+    }
+
+    private LodopHttpResult HandlePrint(string body, int port)
     {
         if (!PrintModel.TryBeginJob())
         {
             _log($"Lodop-compat [{port}]: busy — rejected (503).");
-            WriteText(ctx, 503, "text/plain; charset=utf-8", "Printer busy, retry shortly.");
-            return;
+            return LodopHttpResult.Text(503, "text/plain; charset=utf-8", "Printer busy, retry shortly.");
         }
 
         try
@@ -217,14 +261,7 @@ public sealed class LodopCompatListener : IDisposable
             if (string.IsNullOrWhiteSpace(_config.PrinterName))
             {
                 _log($"Lodop-compat [{port}]: no printer configured.");
-                WriteText(ctx, 500, "text/plain; charset=utf-8", "No printer configured for Lodop compatibility.");
-                return;
-            }
-
-            if (!TryReadRequestBody(ctx, MaxRequestBodyBytes, out var body))
-            {
-                WriteText(ctx, 413, "text/plain; charset=utf-8", "Request body too large.");
-                return;
+                return LodopHttpResult.Text(500, "text/plain; charset=utf-8", "No printer configured for Lodop compatibility.");
             }
 
             string? pdfUrl;
@@ -235,15 +272,11 @@ public sealed class LodopCompatListener : IDisposable
             }
             catch (Exception ex)
             {
-                WriteText(ctx, 400, "text/plain; charset=utf-8", $"Invalid request body: {ex.Message}");
-                return;
+                return LodopHttpResult.Text(400, "text/plain; charset=utf-8", $"Invalid request body: {ex.Message}");
             }
 
             if (string.IsNullOrWhiteSpace(pdfUrl))
-            {
-                WriteText(ctx, 400, "text/plain; charset=utf-8", "pdfUrl is required.");
-                return;
-            }
+                return LodopHttpResult.Text(400, "text/plain; charset=utf-8", "pdfUrl is required.");
 
             byte[] pdfBytes;
             try
@@ -253,18 +286,17 @@ public sealed class LodopCompatListener : IDisposable
             catch (Exception ex)
             {
                 _log($"Lodop-compat [{port}]: failed to fetch '{pdfUrl}': {ex.Message}");
-                WriteText(ctx, 502, "text/plain; charset=utf-8", $"Failed to fetch PDF: {ex.Message}");
-                return;
+                return LodopHttpResult.Text(502, "text/plain; charset=utf-8", $"Failed to fetch PDF: {ex.Message}");
             }
 
             _printModel.PrintTo(Convert.ToBase64String(pdfBytes), _config.PrinterName, LabelPrintType.Pdf);
             _log($"Lodop-compat [{port}]: printed '{pdfUrl}' to {_config.PrinterName}.");
-            WriteText(ctx, 200, "text/plain; charset=utf-8", "OK");
+            return LodopHttpResult.Text(200, "text/plain; charset=utf-8", "OK");
         }
         catch (Exception ex)
         {
             _log($"Lodop-compat [{port}]: print failed: {ex.Message}");
-            WriteText(ctx, 500, "text/plain; charset=utf-8", ex.Message);
+            return LodopHttpResult.Text(500, "text/plain; charset=utf-8", ex.Message);
         }
         finally
         {
@@ -325,61 +357,54 @@ public sealed class LodopCompatListener : IDisposable
         return ms.ToArray();
     }
 
-    // The caller page is on a different origin than localhost:8000/18000, so every
-    // response needs CORS headers, and preflight OPTIONS requests must succeed.
-    private static void WriteCors(HttpListenerResponse response)
+    private static void WriteCors(HttpListenerRequest request, HttpListenerResponse response)
     {
-        response.Headers.Add("Access-Control-Allow-Origin", "*");
-        response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        response.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
+        var origin = request.Headers["Origin"];
+        response.Headers.Set(
+            "Access-Control-Allow-Origin",
+            string.IsNullOrWhiteSpace(origin) ? "*" : origin);
+        response.Headers.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        response.Headers.Set("Access-Control-Allow-Headers", "Content-Type");
+        response.Headers.Set("Access-Control-Allow-Private-Network", "true");
+        response.Headers.Set("Vary", "Origin");
     }
 
-    private static void WriteText(HttpListenerContext ctx, int status, string contentType, string text) =>
-        WriteBytes(ctx, status, contentType, Encoding.UTF8.GetBytes(text));
-
-    private static void WriteBytes(HttpListenerContext ctx, int status, string contentType, byte[] bytes)
-    {
-        try
-        {
-            WriteCors(ctx.Response);
-            ctx.Response.StatusCode = status;
-            ctx.Response.ContentType = contentType;
-            ctx.Response.ContentLength64 = bytes.Length;
-            ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
-            ctx.Response.Close();
-        }
-        catch
-        {
-            // Client disconnected or listener stopped mid-response; runs on a background
-            // Task, so swallow rather than let it escape.
-        }
-    }
+    public static bool LooksLikeOurClodopFuncsJs(string js) =>
+        js.Contains("lodop_print", StringComparison.Ordinal)
+        && js.Contains("6.6.4.2", StringComparison.Ordinal);
 
     /// <summary>
-    /// The minimal C-Lodop-compatible JS surface. `port` is whichever of 8000/18000 this
-    /// particular request actually came in on, baked into the absolute URL the script
-    /// posts back to — a relative URL would resolve against the CALLER PAGE's origin
-    /// (wrong host entirely), not this script's origin, since the script executes in the
-    /// caller page's document.
+    /// Minimal C-Lodop-compatible JS. On https pages MZL loads this from
+    /// localhost.lodop.net:8443/8444, so PRINT must POST back to that same https origin
+    /// (not http://localhost:8000 — mixed content would block it).
     /// </summary>
-    public static string BuildClodopFuncsJs(int port) => $$"""
-        function getCLodop(){ return CLODOP; }
-        var CLODOP = {
-          VERSION: "6.6.4.2",
-          CVERSION: "6.6.4.2",
-          SET_LICENSES: function(){},
-          ADD_PRINT_PDF: function(top,left,width,height,pdfUrl){ this._pdfUrl = pdfUrl; },
-          SET_PRINTER_INDEX: function(index){ /* ignored: LabelPrinter's Lodop-compat row targets a single fixed printer */ },
-          PRINT: function(){
-            var self = this;
-            fetch('http://localhost:{{port}}/lodop_print', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ pdfUrl: self._pdfUrl })
-            });
-          }
-        };
-        """;
+    public static string BuildClodopFuncsJs(int port, bool https = false)
+    {
+        var baseUrl = https
+            ? $"https://{LodopCompatCertificate.HostName}:{port}"
+            : $"http://localhost:{port}";
+
+        return $$"""
+            function getCLodop(){ return CLODOP; }
+            var CLODOP = {
+              VERSION: "6.6.4.2",
+              CVERSION: "6.6.4.2",
+              SET_LICENSES: function(){},
+              ADD_PRINT_PDF: function(top,left,width,height,pdfUrl){ this._pdfUrl = pdfUrl; },
+              SET_PRINTER_INDEX: function(index){ /* ignored: LabelPrinter's Lodop-compat row targets a single fixed printer */ },
+              PRINT: function(){
+                var self = this;
+                fetch('{{baseUrl}}/lodop_print', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ pdfUrl: self._pdfUrl })
+                }).catch(function(err){
+                  console.error('LabelPrinter lodop_print failed:', err);
+                });
+              }
+            };
+            """;
+    }
 
     public void Dispose() => Stop();
 

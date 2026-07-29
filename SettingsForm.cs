@@ -202,7 +202,7 @@ public partial class SettingsForm : Form
         };
         var lblPorts = new Label
         {
-            Text = "8000 / 18000", AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = SystemColors.GrayText
+            Text = "8000/18000 + 8443/8444", AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = SystemColors.GrayText
         };
 
         _lodopEnabledCheckBox = new CheckBox { Checked = config.Enabled, AutoSize = true, Anchor = AnchorStyles.Left };
@@ -251,28 +251,36 @@ public partial class SettingsForm : Form
         LodopCompatListener? tempListener = null;
         try
         {
-            var tempConfig = new LodopCompatConfig { PrinterName = printerName };
-            tempListener = new LodopCompatListener(tempConfig, new PrintModel(), AppendLog);
-            await Task.Run(() => tempListener.Start());
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            int port;
 
-            if (tempListener.BoundPorts.Count == 0)
+            // Prefer the already-running tray listener when MZL compat is enabled —
+            // a second bind on 8000/18000 always fails and used to falsely blame C-Lodop.
+            var livePort = await TryFindOurLodopCompatPortAsync(http);
+            if (livePort is int existing)
             {
-                // Do NOT fall back to guessing port 8000 has "our" listener on it — if
-                // something else (e.g. a real C-Lodop install still running) is bound
-                // there instead, POSTing to it can get back an unrelated 200 OK and this
-                // test would report false success while nothing was actually printed
-                // through OUR code. Report the real problem instead.
-                AppendLog("Lodop-compat test: could not bind 8000 or 18000 — is a real C-Lodop install still running?");
-                MessageBox.Show(
-                    this,
-                    "无法启动兼容服务：8000 和 18000 端口都被占用，很可能是真实 C-Lodop 还在运行（未卸载，或有自动重启机制）。请先确认真实 C-Lodop 已完全卸载/停止后再测试。",
-                    "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                port = existing;
+                AppendLog($"Lodop-compat test: using live listener on {port}.");
+            }
+            else
+            {
+                var tempConfig = new LodopCompatConfig { PrinterName = printerName };
+                tempListener = new LodopCompatListener(tempConfig, new PrintModel(), AppendLog);
+                await Task.Run(() => tempListener.Start());
+
+                if (tempListener.BoundPorts.Count == 0)
+                {
+                    AppendLog("Lodop-compat test: could not bind 8000 or 18000 — is a real C-Lodop install still running?");
+                    MessageBox.Show(
+                        this,
+                        "无法启动兼容服务：8000 和 18000 端口都被占用，且当前不是本程序的兼容服务。请先确认真实 C-Lodop 已完全卸载/停止后再测试。",
+                        "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                port = tempListener.BoundPorts[0];
             }
 
-            var port = tempListener.BoundPorts[0];
-
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
             var content = new StringContent(
                 $$"""{"pdfUrl":"http://localhost:{{port}}/_test_sample.pdf"}""",
                 Encoding.UTF8, "application/json");
@@ -307,6 +315,29 @@ public partial class SettingsForm : Form
             SizeTestButton(_lodopTestButton);
             _lodopTestButton.Enabled = true;
         }
+    }
+
+    /// <summary>
+    /// Returns a port if localhost already serves our Lodop-compat JS (live tray listener),
+    /// otherwise null. Distinguishes us from a real C-Lodop so Test never POSTs blindly.
+    /// </summary>
+    private static async Task<int?> TryFindOurLodopCompatPortAsync(HttpClient http)
+    {
+        foreach (var port in new[] { 8000, 18000 })
+        {
+            try
+            {
+                var js = await http.GetStringAsync($"http://localhost:{port}/CLodopfuncs.js");
+                if (LodopCompatListener.LooksLikeOurClodopFuncsJs(js))
+                    return port;
+            }
+            catch
+            {
+                // port down or not ours
+            }
+        }
+
+        return null;
     }
 
     // Designer Absolute sizes get AutoScale'd; RowStyles we add at runtime do not.
