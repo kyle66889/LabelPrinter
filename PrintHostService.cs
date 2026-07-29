@@ -37,6 +37,9 @@ public sealed class PrintHostService : IDisposable
 
         if (_config.LodopCompat.Enabled)
         {
+            // http://test/fbd.shipswithus.com → localhost:8000 is blocked by Chrome unless
+            // the browser allows that origin local/loopback access (see BrowserLocalAccessPolicy).
+            BrowserLocalAccessPolicy.TryApply(Log);
             _lodopCompatListener = new LodopCompatListener(_config.LodopCompat, _printModel, Log);
             _lodopCompatListener.Start();
         }
