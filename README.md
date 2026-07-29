@@ -9,6 +9,9 @@
 <img width="1540" height="864" alt="image" src="https://github.com/user-attachments/assets/148ff6b1-7e24-4b89-8c46-9a1e5f10bdd2" />
 
 
+注意对于mzl兼容模式，第一次需要添加ssl证书，如图点击“yes” 加入证书
+<img width="761" height="820" alt="image" src="https://github.com/user-attachments/assets/4897b6bc-c3e4-466a-8e67-1dfba0540d29" />
+
 
 设置界面：顶部显示本机局域网 IP，每行一种尺寸，含默认标记、调用链接（`http://ip:端口/LabelPrint`）、打印机、类型、端口、启用开关与独立测试按钮。
 
