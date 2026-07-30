@@ -139,6 +139,28 @@ public sealed class LodopPrintQueue : IDisposable
         var pdfUrl = job.PdfUrl;
         var port = job.Port;
 
+        var printer = _printerName();
+        if (string.IsNullOrWhiteSpace(printer))
+        {
+            Fail("no_printer", pdfUrl, $"port={port}");
+            return;
+        }
+
+        // Download once; on failure record to the failure log (no auto-retry). Operators
+        // can re-queue from the Settings failure tab. Fetch before the printer lock so a
+        // slow download does not block REST/WS jobs sharing PrintModel.
+        byte[] pdfBytes;
+        try
+        {
+            pdfBytes = _fetchPdf(pdfUrl);
+            LodopPdfFetch.EnsureLooksLikePdf(pdfBytes);
+        }
+        catch (Exception ex)
+        {
+            Fail("fetch_failed", pdfUrl, ex.Message);
+            return;
+        }
+
         // Wait up to 60s for a print slot (same idea as WebSocket jobs) rather than
         // dropping — the HTTP response already returned 200/queued.
         if (!_beginJob(60_000))
@@ -149,24 +171,6 @@ public sealed class LodopPrintQueue : IDisposable
 
         try
         {
-            var printer = _printerName();
-            if (string.IsNullOrWhiteSpace(printer))
-            {
-                Fail("no_printer", pdfUrl, $"port={port}");
-                return;
-            }
-
-            byte[] pdfBytes;
-            try
-            {
-                pdfBytes = _fetchPdf(pdfUrl);
-            }
-            catch (Exception ex)
-            {
-                Fail("fetch_failed", pdfUrl, ex.Message);
-                return;
-            }
-
             try
             {
                 _printPdf(pdfBytes, printer);

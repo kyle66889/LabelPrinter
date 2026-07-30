@@ -323,7 +323,9 @@ public sealed class LodopCompatListener : IDisposable
             ms.Write(buffer, 0, read);
         }
 
-        return ms.ToArray();
+        var bytes = ms.ToArray();
+        LodopPdfFetch.EnsureLooksLikePdf(bytes);
+        return bytes;
     }
 
     private static bool TryReadRequestBody(HttpListenerContext ctx, long maxBytes, out string body)
