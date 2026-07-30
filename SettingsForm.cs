@@ -1,6 +1,7 @@
 using System.Drawing.Printing;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using LabelPrinter.Printing;
 using LabelPrinter.Services;
 
@@ -14,6 +15,7 @@ public partial class SettingsForm : Form
     private readonly List<string> _printerChoices = new();
     private readonly List<Label> _headerLabels = new();
     private string _localIp = "127.0.0.1";
+    private HashSet<string> _renderedFailureIds = new();
 
     // Lodop-compat row controls — kept separate from FormatRow/_rows since this row has no
     // Size/Alias/PrintType/Port (see LodopCompatConfig for why).
@@ -21,6 +23,11 @@ public partial class SettingsForm : Form
     private ComboBox _lodopPrinterCombo = null!;
     private CheckBox _lodopEnabledCheckBox = null!;
     private Button _lodopTestButton = null!;
+    private Button btnRetryFailed = null!;
+    private Button btnClearFailed = null!;
+    private ComboBox cboFailureFilter = null!;
+    private bool _failureFilterTodayOnly;
+    private bool _lastFailureFilterTodayOnly;
 
     public event Action<AppConfig>? ConfigSaved;
 
@@ -36,8 +43,38 @@ public partial class SettingsForm : Form
             L.SetLanguage(cboLanguage.SelectedIndex == 1 ? AppLanguage.En : AppLanguage.Zh);
         };
         L.LanguageChanged += ApplyLanguage;
+        // Seed from today's disk log first — the TextBox is otherwise empty after
+        // close/reopen or process restart, while failures already reload from JSON.
+        SeedRunLogFromDisk();
         LoadUi();
         _host.LogMessage += AppendLog;
+        // The failure tab can be populated before its TabPage/ListView are ever shown
+        // (e.g. it isn't the initially-selected tab); force one more repaint once the
+        // form actually has a handle so the first row doesn't sit un-painted.
+        Load += (_, _) => RefreshFailureList(force: true);
+        // Re-read disk when switching back to 运行日志 so OK + FAIL lines written while
+        // the form was closed (or on another view) always show in the main log pane.
+        tabLog.SelectedIndexChanged += (_, _) =>
+        {
+            if (tabLog.SelectedTab == tabRunLog)
+                SeedRunLogFromDisk();
+        };
+    }
+
+    private void SeedRunLogFromDisk()
+    {
+        var text = FileLog.TryReadToday();
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        // Preserve live-only lines that might not have flushed yet by only replacing
+        // when disk content is at least as long (normal case after FileLog.Write).
+        if (txtLog.TextLength > 0 && text.Length < txtLog.TextLength)
+            return;
+
+        txtLog.Text = text;
+        txtLog.SelectionStart = txtLog.TextLength;
+        txtLog.ScrollToCaret();
     }
 
     private void LoadUi()
@@ -61,9 +98,113 @@ public partial class SettingsForm : Form
         foreach (var format in _config.LabelFormats)
             AddFormatRow(format);
         AddLodopCompatRow(_config.LodopCompat);
+        BuildRetryFailedButton();
+        // Belt-and-suspenders in case a designer reopen reorders Controls: keep Fill under Top.
+        tabFailures.Controls.SetChildIndex(lvFailures, 0);
+        tabFailures.Controls.SetChildIndex(pnlFailureToolbar, 1);
+
+        // Daily audit txt stays; unresolved json is never pruned here.
+        var pruned = LodopFailureReport.PruneOldAuditFiles(
+            Path.Combine(AppContext.BaseDirectory, "logs"), keepDays: 30);
+        if (pruned > 0)
+            AppendLog($"Pruned {pruned} Lodop failure audit file(s) older than 30 days.");
 
         FitFormatsTable();
         ApplyLanguage();
+        RefreshFailureList(force: true);
+    }
+
+    /// <summary>
+    /// Built the same way as row.Test/_lodopTestButton — a Designer-declared Button with
+    /// AutoSize measured against the live system font came out taller than its parent
+    /// panel and spilled over the list below it. Constructing it in code with its own
+    /// fixed Font, straight into SizeFailureToolbarButton(), avoids that entirely.
+    /// </summary>
+    private void BuildRetryFailedButton()
+    {
+        const int btnH = FailureToolbarButtonHeight;
+
+        btnRetryFailed = new Button
+        {
+            AutoSize = false,
+            Font = new Font("Segoe UI", 9F),
+            Size = new Size(120, btnH),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            Margin = Padding.Empty,
+            Padding = new Padding(10, 0, 10, 0),
+            FlatStyle = FlatStyle.System,
+            UseVisualStyleBackColor = true,
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        btnRetryFailed.Click += BtnRetryFailed_Click;
+
+        btnClearFailed = new Button
+        {
+            AutoSize = false,
+            Font = new Font("Segoe UI", 9F),
+            Size = new Size(120, btnH),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            Margin = Padding.Empty,
+            Padding = new Padding(10, 0, 10, 0),
+            FlatStyle = FlatStyle.System,
+            UseVisualStyleBackColor = true,
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        btnClearFailed.Click += BtnClearFailed_Click;
+
+        cboFailureFilter = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 130,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left,
+            Font = new Font("Segoe UI", 9F),
+            FlatStyle = FlatStyle.System
+        };
+        cboFailureFilter.SelectedIndexChanged += (_, _) =>
+        {
+            _failureFilterTodayOnly = cboFailureFilter.SelectedIndex == 1;
+            RefreshFailureList(force: true);
+        };
+
+        pnlFailureToolbar.Controls.Add(cboFailureFilter);
+        pnlFailureToolbar.Controls.Add(btnClearFailed);
+        pnlFailureToolbar.Controls.Add(btnRetryFailed);
+        pnlFailureToolbar.Resize += (_, _) => LayoutFailureToolbar();
+        LayoutFailureToolbar();
+    }
+
+    private const int FailureToolbarButtonHeight = 28;
+
+    private void LayoutFailureToolbar()
+    {
+        if (btnRetryFailed is null || btnClearFailed is null || cboFailureFilter is null)
+            return;
+
+        var btnH = FailureToolbarButtonHeight;
+        var y = Math.Max(4, (pnlFailureToolbar.ClientSize.Height - btnH) / 2);
+
+        SizeFailureToolbarButton(btnRetryFailed);
+        SizeFailureToolbarButton(btnClearFailed);
+
+        btnRetryFailed.Top = y;
+        btnClearFailed.Top = y;
+        btnRetryFailed.Left = pnlFailureToolbar.ClientSize.Width - btnRetryFailed.Width - 8;
+        btnClearFailed.Left = btnRetryFailed.Left - btnClearFailed.Width - 8;
+
+        // ComboBox height is font-driven; center against the button band.
+        cboFailureFilter.Top = y + Math.Max(0, (btnH - cboFailureFilter.Height) / 2);
+        cboFailureFilter.Left = chkSelectAllFailures.Right + 12;
+
+        chkSelectAllFailures.Top = y + Math.Max(0, (btnH - chkSelectAllFailures.Height) / 2);
+    }
+
+    private static void SizeFailureToolbarButton(Button button)
+    {
+        var textWidth = TextRenderer.MeasureText(
+            string.IsNullOrEmpty(button.Text) ? "清除选中项" : button.Text,
+            button.Font).Width;
+        button.AutoSize = false;
+        button.Size = new Size(Math.Max(96, textWidth + 28), FailureToolbarButtonHeight);
     }
 
     private void BuildHeaderRow()
@@ -367,8 +508,7 @@ public partial class SettingsForm : Form
         chkRunAtStartup.Top = y;
         btnSave.Top = y - 2;
         chkAllowLan.Top = chkRunAtStartup.Bottom + 6;
-        lblLog.Top = chkAllowLan.Bottom + 12;
-        txtLog.Top = lblLog.Bottom + 4;
+        tabLog.Top = chkAllowLan.Bottom + 12;
     }
 
     private string BuildUrl(int port) => $"http://{_localIp}:{port}/LabelPrint";
@@ -472,7 +612,21 @@ public partial class SettingsForm : Form
         // Keep the Language label tucked against the combo on the right edge.
         lblLanguage.Left = cboLanguage.Left - lblLanguage.PreferredWidth - 8;
         lblLanguage.Top = cboLanguage.Top + (cboLanguage.Height - lblLanguage.PreferredHeight) / 2;
-        lblLog.Text = L.T("log.label");
+        tabRunLog.Text = L.T("log.tab.run");
+        lvFailures.Columns[0].Text = L.T("col.failTime");
+        lvFailures.Columns[1].Text = L.T("col.failReason");
+        lvFailures.Columns[2].Text = L.T("col.failFile");
+        lvFailures.Columns[3].Text = L.T("col.failDetail");
+        btnRetryFailed.Text = L.T("btn.retryFailed");
+        btnClearFailed.Text = L.T("btn.clearFailed");
+        chkSelectAllFailures.Text = L.T("chk.selectAllFailures");
+        var filterIndex = cboFailureFilter.SelectedIndex < 0 ? 0 : cboFailureFilter.SelectedIndex;
+        cboFailureFilter.Items.Clear();
+        cboFailureFilter.Items.Add(L.T("fail.filter.all"));
+        cboFailureFilter.Items.Add(L.T("fail.filter.today"));
+        cboFailureFilter.SelectedIndex = filterIndex;
+        LayoutFailureToolbar();
+        RefreshFailureList(force: true);
 
         string[] headers =
         {
@@ -517,6 +671,142 @@ public partial class SettingsForm : Form
         }
 
         txtLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+        RefreshFailureList();
+    }
+
+    /// <summary>
+    /// Re-reads logs/lodop-print-failures.json and repaints the failure tab, including
+    /// the pending count in its title. Called on every log line, so it skips rebuilding
+    /// the list (and losing the operator's checkbox picks) unless the failure set itself
+    /// actually changed; <paramref name="force"/> overrides that for language switches.
+    /// </summary>
+    private void RefreshFailureList(bool force = false)
+    {
+        var all = LodopFailureStore.For(LodopFailureStore.DefaultPath).Load();
+        // Tab badge = full unresolved pool (cross-day), not the filtered view count.
+        tabFailures.Text = $"{L.T("log.tab.failures")} ({all.Count})";
+
+        var visible = _failureFilterTodayOnly
+            ? all.Where(j => LodopFailedJobExtensions.IsOnLocalDay(j.Timestamp, DateTime.Today)).ToList()
+            : all.ToList();
+
+        var ids = visible.Select(f => f.Id).ToHashSet();
+        if (!force && ids.SetEquals(_renderedFailureIds) && _lastFailureFilterTodayOnly == _failureFilterTodayOnly)
+            return;
+        _renderedFailureIds = ids;
+        _lastFailureFilterTodayOnly = _failureFilterTodayOnly;
+
+        chkSelectAllFailures.Checked = false;
+
+        lvFailures.BeginUpdate();
+        lvFailures.Items.Clear();
+        foreach (var job in visible.OrderByDescending(j => j.Timestamp))
+        {
+            var item = new ListViewItem(job.Timestamp);
+            item.SubItems.Add(ReasonLabel(job.Reason));
+            item.SubItems.Add(LodopFailureReport.FileNameFromUrl(job.PdfUrl));
+            item.SubItems.Add(job.Detail ?? "");
+            item.Tag = job;
+            lvFailures.Items.Add(item);
+        }
+        lvFailures.EndUpdate();
+        lvFailures.Refresh();
+    }
+
+    private void ChkSelectAllFailures_CheckedChanged(object? sender, EventArgs e)
+    {
+        foreach (ListViewItem item in lvFailures.Items)
+            item.Checked = chkSelectAllFailures.Checked;
+    }
+
+    private static string ReasonLabel(string reason)
+    {
+        var key = $"fail.{reason}";
+        var label = L.T(key);
+        return label == key ? reason : label;
+    }
+
+    /// <summary>
+    /// Re-submits checked failures through the same HTTP path MZL would use (not a
+    /// shortcut straight to PrintModel), so a retry exercises fetch+print exactly like a
+    /// fresh print — and only clears an entry from the failure store once the live
+    /// listener has actually accepted it back into its queue.
+    /// </summary>
+    private async void BtnRetryFailed_Click(object? sender, EventArgs e)
+    {
+        var selected = lvFailures.CheckedItems.Cast<ListViewItem>()
+            .Select(i => (LodopFailedJob)i.Tag!)
+            .ToList();
+
+        if (selected.Count == 0)
+        {
+            MessageBox.Show(this, L.T("msg.selectFailures"), "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        btnRetryFailed.Enabled = false;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            var port = await TryFindOurLodopCompatPortAsync(http);
+            if (port is null)
+            {
+                MessageBox.Show(this, L.T("msg.lodopNotRunning"), "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var store = LodopFailureStore.For(LodopFailureStore.DefaultPath);
+            foreach (var job in selected)
+            {
+                try
+                {
+                    var content = new StringContent(
+                        JsonSerializer.Serialize(new { pdfUrl = job.PdfUrl }),
+                        Encoding.UTF8, "application/json");
+                    var response = await http.PostAsync($"http://localhost:{port}/lodop_print", content);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        store.Remove(job.Id);
+                        AppendLog($"Retry: re-queued '{job.PdfUrl}'.");
+                    }
+                    else
+                    {
+                        AppendLog($"Retry rejected for '{job.PdfUrl}': HTTP {(int)response.StatusCode}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"Retry failed for '{job.PdfUrl}': {ex.Message}");
+                }
+            }
+        }
+        finally
+        {
+            btnRetryFailed.Enabled = true;
+            RefreshFailureList();
+        }
+    }
+
+    private void BtnClearFailed_Click(object? sender, EventArgs e)
+    {
+        var selected = lvFailures.CheckedItems.Cast<ListViewItem>()
+            .Select(i => (LodopFailedJob)i.Tag!)
+            .ToList();
+
+        if (selected.Count == 0)
+        {
+            MessageBox.Show(this, L.T("msg.selectFailuresClear"), "Label Printer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var store = LodopFailureStore.For(LodopFailureStore.DefaultPath);
+        foreach (var job in selected)
+        {
+            store.Remove(job.Id);
+            AppendLog($"Cleared failed job '{job.PdfUrl}'.");
+        }
+
+        RefreshFailureList(force: true);
     }
 
     private void SettingsForm_FormClosing(object? sender, FormClosingEventArgs e)

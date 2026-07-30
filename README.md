@@ -21,6 +21,8 @@
 
 不需要自己编译：在 [Releases 页面](https://github.com/FBD-Groups/LabelPrinter/releases/latest) 下载最新的 `LabelPrinter-win-x64.zip`，解压后直接运行 `LabelPrinter.exe` 即可——自包含发布，已内置 .NET 8 运行时，目标机器无需额外安装任何东西。
 
+当前推荐版本：**[v1.1.1](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.1)**（MZL 连扫队列 + 失败可重打）。
+
 ## 环境要求
 
 从源码构建（非必须，仅当你要修改代码时）：
@@ -37,23 +39,25 @@
 | REST 本地接口 | 每个启用的尺寸各自监听一个端口，`POST /LabelPrint`，供本机脚本或其他程序调用 |
 | 系统托盘 | 后台常驻，托盘图标显示 WebSocket 连接状态 |
 | 设置界面 | 逐尺寸选择打印机 / 类型 / 端口 / 启用状态，显示本机局域网 IP，支持逐尺寸测试打印 |
+| MZL Lodop 兼容 | 模拟 C-Lodop 本机服务，MZL「打印运单」无需改网页；支持 http（8000/18000）与 https（8443/8444） |
+| 打印队列 | Lodop 任务先入队再回 `200 Queued`，后台串行打印；崩溃/重启可从磁盘续打，避免连扫翻页丢单 |
 | 开机自启 | 写入当前用户注册表 `Run` 项 |
 | 自动重连 | WebSocket 断线后按配置间隔自动重试 |
-| 日志 | 运行日志写入 `logs/labelprinter-<日期>.log` |
+| 日志 | 运行日志（成功/失败）写入 `logs/labelprinter-<日期>.log`；设置页可回看当天日志；失败另有可重打清单 |
 
 ## 架构
 
 ```
-RMA Server (WebSocket)
-        │  LabelPrint|<alias>|<data>
-        ▼
-┌────────────────────────┐   REST POST :48210/LabelPrint (4x2)
-│  LabelPrinter          │◄─ REST POST :48211/LabelPrint (4x3)
-│  (系统托盘)              │◄─ REST POST :48212/LabelPrint (4x6)
-└───────────┬────────────┘
-            │ RAW / LPT（按尺寸各自绑定的打印机）
-            ▼
-   标签机 (Zebra / Eltron …)
+RMA Server (WebSocket)              MZL 浏览器 (C-Lodop API)
+        │  LabelPrint|…                      │  localhost:8000 / :8443
+        ▼                                    ▼
+┌─────────────────────────────────────────────────────┐
+│  LabelPrinter（系统托盘）                              │
+│   REST :48210–48212  │  Lodop 兼容 + 打印队列         │
+└───────────────────────┬─────────────────────────────┘
+                        │ RAW / LPT / GDI(PDF)
+                        ▼
+               标签机 / Windows 打印机
 ```
 
 ## 快速开始
@@ -64,7 +68,7 @@ RMA Server (WebSocket)
 dotnet build -c Release
 ```
 
-输出：`bin\Release\net8.0-windows\LabelPrinter.exe`
+输出：`bin\Release\net8.0-windows10.0.19041.0\LabelPrinter.exe`
 
 ### 运行
 
@@ -93,7 +97,11 @@ dotnet build -c Release
       { "Size": "4x2", "Alias": "4x2", "PrinterName": "", "PrintType": "Epl", "Port": 48210, "Enabled": true, "IsDefault": false },
       { "Size": "4x3", "Alias": "4x3", "PrinterName": "", "PrintType": "Epl", "Port": 48211, "Enabled": true, "IsDefault": false },
       { "Size": "4x6", "Alias": "4x6", "PrinterName": "", "PrintType": "Epl", "Port": 48212, "Enabled": true, "IsDefault": true }
-    ]
+    ],
+    "LodopCompat": {
+      "Enabled": false,
+      "PrinterName": ""
+    }
   }
 }
 ```
@@ -107,6 +115,7 @@ dotnet build -c Release
 | `WebSocketConnectTimeoutSeconds` | WebSocket 连接超时（秒） | `10` |
 | `RunAtStartup` | 是否开机自启 | `false` |
 | `LabelFormats` | 标签尺寸列表，固定三项（4x2 / 4x3 / 4x6），见下表 | — |
+| `LodopCompat` | MZL C-Lodop 兼容：`Enabled` / `PrinterName`（建议选能打 PDF 的 Windows 打印机） | 关闭 |
 
 `LabelFormats` 每一项的字段：
 
@@ -181,6 +190,33 @@ P1
 
 配置前请确认：该端口绑定的打印机实际工作模式（如驱动名带 `BPL-Z` 多为 ZPL）→ 设置里选同一类型 → 调用方发同一语言的指令。
 
+## MZL / C-Lodop 兼容
+
+MZL「打印运单」走浏览器里的 C-Lodop 脚本。启用设置里的 **MZL 兼容** 行后，本程序会在本机提供与 C-Lodop 相同的入口，网页**不用改**即可把 PDF 打到所选打印机。
+
+| 站点协议 | 本机入口 |
+|----------|----------|
+| http（如 test.shipswithus.com） | `http://localhost:8000` / `:18000` |
+| https（如 fbd.shipswithus.com） | `https://localhost.lodop.net:8443` / `:8444` |
+
+**连扫不丢单：** 收到打印请求后立即入队并返回 `Queued`，后台串行下载 PDF 再打印；队列持久化到 `logs/lodop-print-queue.json`，异常退出后重启可续打。
+
+**日志与失败补打：**
+
+| 位置 | 说明 |
+|------|------|
+| 设置 → 运行日志 | 当天成功/失败主日志（来自 `logs/labelprinter-<日期>.log`） |
+| 设置 → 失败日志 | 未处理失败清单：筛选、全选、打印选中项、清除选中项 |
+| `logs/lodop-failures-*.txt` | 日审计（只追加）；超过 30 天的 txt 会自动清理 |
+| `logs/lodop-print-failures.json` | 未处理失败池（跨天保留，直到清除或重打入队） |
+
+**使用注意：**
+
+- 浏览器与 LabelPrinter 须在**同一台电脑**；请卸载本机真实 C-Lodop，避免抢端口
+- https 站点首次会安装自签证书；若脚本加载失败，**重启浏览器**后再试
+- 新版 Chrome 若仍拦本机访问：`chrome://flags/#local-network-access-check` → Disabled
+- 「打印成功」表示已交给 Windows 打印队列，不等于纸一定已出
+
 ## 测试
 
 ### REST（PowerShell，纯文本，以 4x6 默认端口 48212 为例）
@@ -241,26 +277,27 @@ curl -X POST http://localhost:48212/LabelPrint \
 
 ```
 LabelPrinter/
-├── Program.cs                 # 入口，单实例 Mutex
-├── TrayApplicationContext.cs    # 系统托盘与生命周期
-├── SettingsForm.cs              # 设置界面（逐尺寸配置行）
-├── Config.cs                    # appsettings.json 读写，含旧版单打印机配置迁移
-├── PrintHostService.cs          # 打印服务编排，按启用的尺寸各起一个 REST 监听
-├── StartupRegistration.cs       # 开机自启注册表
+├── Program.cs / TrayApplicationContext.cs / SettingsForm.cs / Config.cs
+├── PrintHostService.cs / FileLog.cs
 ├── Services/
-│   ├── WebSocketPrintListener.cs   # 按 alias 路由到对应尺寸
-│   ├── RestPrintListener.cs        # 每个 LabelFormat 一个实例，绑定各自端口
-│   ├── LabelPrintMessageParser.cs
-│   └── NetworkHelper.cs            # 获取本机局域网 IPv4，供设置界面显示
-└── Printing/
-    ├── PrintModel.cs            # 打印任务分块与打印调度
-    ├── RawPrinterHelper.cs      # Windows RAW 打印
-    ├── LptPrinter.cs            # LPT 并口输出
-    ├── LabelFormat.cs           # 尺寸/打印机/端口/类型 的数据模型
-    └── SampleLabelGenerator.cs  # 生成设置界面"测试"按钮用的样张（按 PrintType 与尺寸）
+│   ├── WebSocketPrintListener.cs / RestPrintListener.cs
+│   ├── LodopCompatListener.cs      # C-Lodop 兼容 HTTP/HTTPS
+│   ├── LodopPrintQueue.cs          # 入队 + 串行打印 + 落盘续打
+│   ├── LodopQueueStore.cs / LodopFailureStore.cs / LodopFailureReport.cs
+│   ├── LodopCompatCertificate.cs / LodopLoopbackHttpsServer.cs
+│   └── NetworkHelper.cs / BrowserLocalAccessPolicy.cs
+└── Printing/                       # PrintModel、RAW、LPT、样张生成等
 ```
 
 ## 常见问题
+
+**MZL「打印运单」没反应**
+
+- 确认设置里 **MZL 兼容** 已启用并选了打印机，点该行 **测试**
+- 浏览器与本程序同一台电脑；不要同时装真实 C-Lodop
+- https 站点：确认证书已信任，必要时重启浏览器
+- Chrome 仍拦截本机：见上文 `local-network-access-check`
+- 打开设置 → 运行日志 / 失败日志，或查看 `logs/labelprinter-<日期>.log`
 
 **REST 接口无法访问**
 
