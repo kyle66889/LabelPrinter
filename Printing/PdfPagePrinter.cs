@@ -1,18 +1,23 @@
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Drawing.Printing;
-using System.Runtime.InteropServices.WindowsRuntime;
-using Windows.Data.Pdf;
-using Windows.Storage.Streams;
+using PDFtoImage;
+using SkiaSharp;
 
 namespace LabelPrinter.Printing;
 
 /// <summary>
-/// Renders PDF pages to bitmaps via Windows.Data.Pdf, then prints through the
-/// printer's GDI driver (same path Edge uses). Label printers do not understand
-/// raw PDF bytes; dumping them with WritePrinter is a silent no-op on most models.
+/// Renders PDF pages to bitmaps via PDFium (PDFtoImage), then prints through the
+/// printer's GDI driver. Label printers do not understand raw PDF bytes; dumping
+/// them with WritePrinter is a silent no-op on most models.
+///
+/// Windows.Data.Pdf was tried first but renders many MZL waybill PDFs as blank
+/// white pages (browser/Acrobat show content). PDFium matches what operators see.
 /// </summary>
 public static class PdfPagePrinter
 {
+    private const int RenderDpi = 144;
+
     public static void Print(string printerName, byte[] pdfBytes)
     {
         if (pdfBytes is null || pdfBytes.Length == 0)
@@ -57,8 +62,12 @@ public static class PdfPagePrinter
                 // printer/paper-size combination. Root cause not yet found — kept as-is
                 // per explicit instruction to prioritize matching C-Lodop's fit-to-page
                 // look over avoiding the rotation for now.
-                var printable = e.PageSettings!.PrintableArea;
-                var scale = Math.Min(printable.Width / img.Width, printable.Height / img.Height);
+                var area = ResolveDrawArea(e);
+                var scale = Math.Min(area.Width / img.Width, area.Height / img.Height);
+                if (scale <= 0 || float.IsNaN(scale) || float.IsInfinity(scale))
+                    throw new InvalidOperationException(
+                        $"Printer draw area is unusable ({area.Width}x{area.Height}).");
+
                 var w = img.Width * scale;
                 var h = img.Height * scale;
                 e.Graphics!.DrawImage(img, 0, 0, w, h);
@@ -75,44 +84,104 @@ public static class PdfPagePrinter
         }
     }
 
-    private static (List<Image> images, SizeF firstPageSizePoints) RenderPages(byte[] pdfBytes) =>
-        RenderPagesAsync(pdfBytes).ConfigureAwait(false).GetAwaiter().GetResult();
-
-    private static async Task<(List<Image>, SizeF)> RenderPagesAsync(byte[] pdfBytes)
+    /// <summary>
+    /// Renders each PDF page to a GDI bitmap. Used by Print and by unit tests that
+    /// guard against the Windows.Data.Pdf "blank waybill" regression.
+    /// </summary>
+    public static (List<Image> images, SizeF firstPageSizePoints) RenderPages(byte[] pdfBytes)
     {
-        using var mem = new InMemoryRandomAccessStream();
-        await mem.WriteAsync(pdfBytes.AsBuffer()).AsTask().ConfigureAwait(false);
-        mem.Seek(0);
+        var pageCount = Conversion.GetPageCount(pdfBytes);
+        if (pageCount <= 0)
+            throw new InvalidOperationException("PDF has no pages.");
 
-        var pdf = await PdfDocument.LoadFromStreamAsync(mem).AsTask().ConfigureAwait(false);
-        var list = new List<Image>((int)pdf.PageCount);
-        var firstPageSize = SizeF.Empty;
+        var firstSize = Conversion.GetPageSize(pdfBytes, 0);
+        var list = new List<Image>(pageCount);
+        var options = new RenderOptions(Dpi: RenderDpi);
 
-        for (uint i = 0; i < pdf.PageCount; i++)
+        for (var i = 0; i < pageCount; i++)
         {
-            using var page = pdf.GetPage(i);
-            if (i == 0)
-                firstPageSize = new SizeF((float)page.Size.Width, (float)page.Size.Height);
-            using var outStream = new InMemoryRandomAccessStream();
-
-            // ~2× PDF point size ≈ 144 dpi equivalent — sharp enough for thermal labels.
-            var options = new PdfPageRenderOptions
+            using var sk = Conversion.ToImage(pdfBytes, i, null, options);
+            var bmp = SkiaToBitmap(sk);
+            if (IsMostlyBlank(bmp))
             {
-                DestinationWidth = Math.Max(1u, (uint)Math.Round(page.Size.Width * 2)),
-                DestinationHeight = Math.Max(1u, (uint)Math.Round(page.Size.Height * 2))
-            };
-            await page.RenderToStreamAsync(outStream, options).AsTask().ConfigureAwait(false);
-            outStream.Seek(0);
+                bmp.Dispose();
+                foreach (var img in list)
+                    img.Dispose();
+                throw new InvalidOperationException(
+                    $"PDF page {i + 1} rendered blank (PDFium produced no visible content).");
+            }
 
-            using var netStream = outStream.AsStreamForRead();
-            // Clone into a MemoryStream-backed Bitmap so the WinRT stream can close.
-            using var ms = new MemoryStream();
-            await netStream.CopyToAsync(ms).ConfigureAwait(false);
-            ms.Position = 0;
-            using var temp = Image.FromStream(ms);
-            list.Add(new Bitmap(temp));
+            list.Add(bmp);
         }
 
-        return (list, firstPageSize);
+        return (list, firstSize);
+    }
+
+    /// <summary>
+    /// True when sampled pixels are nearly all white — the failure mode Windows.Data.Pdf
+    /// hit on MZL waybills that still open fine in a browser.
+    /// </summary>
+    public static bool IsMostlyBlank(Image image, double darkRatioThreshold = 0.005)
+    {
+        Bitmap bmp;
+        var owns = false;
+        if (image is Bitmap existing)
+        {
+            bmp = existing;
+        }
+        else
+        {
+            bmp = new Bitmap(image);
+            owns = true;
+        }
+
+        try
+        {
+            long dark = 0, total = 0;
+            const int step = 4;
+            for (var y = 0; y < bmp.Height; y += step)
+            {
+                for (var x = 0; x < bmp.Width; x += step)
+                {
+                    var c = bmp.GetPixel(x, y);
+                    total++;
+                    if (c.R < 250 || c.G < 250 || c.B < 250)
+                        dark++;
+                }
+            }
+
+            return total == 0 || dark / (double)total < darkRatioThreshold;
+        }
+        finally
+        {
+            if (owns)
+                bmp.Dispose();
+        }
+    }
+
+    private static RectangleF ResolveDrawArea(PrintPageEventArgs e)
+    {
+        var printable = e.PageSettings!.PrintableArea;
+        if (printable.Width >= 1 && printable.Height >= 1)
+            return printable;
+
+        var margins = e.MarginBounds;
+        if (margins.Width >= 1 && margins.Height >= 1)
+            return margins;
+
+        return e.PageBounds;
+    }
+
+    private static Bitmap SkiaToBitmap(SKBitmap sk)
+    {
+        using var encoded = sk.Encode(SKEncodedImageFormat.Png, 100)
+            ?? throw new InvalidOperationException("Failed to encode rendered PDF page.");
+        // Decode into an independent GDI bitmap. Image.FromStream keeps a live reference to
+        // the source stream; cloning after the MemoryStream is disposed yields "Parameter is
+        // not valid" on later Width/Height/GetPixel calls.
+        var pngBytes = encoded.ToArray();
+        using var ms = new MemoryStream(pngBytes);
+        using var loaded = new Bitmap(ms);
+        return new Bitmap(loaded);
     }
 }

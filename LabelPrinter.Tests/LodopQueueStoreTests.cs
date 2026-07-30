@@ -47,7 +47,7 @@ public class LodopQueueStoreTests
 
             using var queue = new LodopPrintQueue(
                 printerName: () => "Fake",
-                fetchPdf: url => System.Text.Encoding.UTF8.GetBytes(url),
+                fetchPdf: url => System.Text.Encoding.UTF8.GetBytes("%PDF-1.4\n" + url),
                 printPdf: (bytes, _) =>
                 {
                     lock (printed)
@@ -60,7 +60,7 @@ public class LodopQueueStoreTests
 
             Assert.True(SpinWait.SpinUntil(() =>
             {
-                lock (printed) return printed.Contains("http://restored.pdf");
+                lock (printed) return printed.Contains("%PDF-1.4\nhttp://restored.pdf");
             }, TimeSpan.FromSeconds(5)));
 
             // Completed job removed from disk

@@ -11,7 +11,7 @@ public class LodopPrintQueueTests
         var printed = new List<string>();
         using var queue = new LodopPrintQueue(
             printerName: () => "FakePrinter",
-            fetchPdf: url => System.Text.Encoding.UTF8.GetBytes(url),
+            fetchPdf: url => System.Text.Encoding.UTF8.GetBytes("%PDF-1.4\n" + url),
             printPdf: (bytes, _) =>
             {
                 lock (printed)
@@ -32,7 +32,7 @@ public class LodopPrintQueueTests
         }, TimeSpan.FromSeconds(5)));
 
         lock (printed)
-            Assert.Equal(new[] { "http://a.pdf", "http://b.pdf" }, printed);
+            Assert.Equal(new[] { "%PDF-1.4\nhttp://a.pdf", "%PDF-1.4\nhttp://b.pdf" }, printed);
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public class LodopPrintQueueTests
         using var block = new ManualResetEventSlim(false);
         using var queue = new LodopPrintQueue(
             printerName: () => "FakePrinter",
-            fetchPdf: url => System.Text.Encoding.UTF8.GetBytes(url),
+            fetchPdf: url => System.Text.Encoding.UTF8.GetBytes("%PDF-1.4\n" + url),
             printPdf: (_, _) => block.Wait(TimeSpan.FromSeconds(10)),
             log: _ => { },
             beginJob: _ => true,
