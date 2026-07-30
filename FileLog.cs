@@ -12,13 +12,15 @@ public static class FileLog
 {
     private static readonly object Gate = new();
 
+    public static string TodayLogPath(string? baseDir = null) =>
+        Path.Combine(baseDir ?? AppContext.BaseDirectory, "logs", $"labelprinter-{DateTime.Now:yyyy-MM-dd}.log");
+
     public static void Write(string message)
     {
         try
         {
-            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
-            Directory.CreateDirectory(logDir);
-            var path = Path.Combine(logDir, $"labelprinter-{DateTime.Now:yyyy-MM-dd}.log");
+            var path = TodayLogPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             lock (Gate)
             {
                 File.AppendAllText(
@@ -29,6 +31,38 @@ public static class FileLog
         catch
         {
             // Logging is best-effort; never let a logging failure escape.
+        }
+    }
+
+    /// <summary>
+    /// Reads today's on-disk log for the Settings "运行日志" seed. Caps at
+    /// <paramref name="maxChars"/> (tail) so a huge day file doesn't freeze the UI.
+    /// Returns null if missing/unreadable. Uses ReadWrite share so live writers keep going.
+    /// </summary>
+    public static string? TryReadToday(string? baseDir = null, int maxChars = 512_000)
+    {
+        try
+        {
+            var path = TodayLogPath(baseDir);
+            if (!File.Exists(path))
+                return null;
+
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(fs);
+            var text = reader.ReadToEnd();
+            if (text.Length == 0)
+                return null;
+            if (text.Length <= maxChars)
+                return text;
+
+            // Prefer cutting on a line boundary so the first visible line isn't half a message.
+            var start = text.Length - maxChars;
+            var nl = text.IndexOf('\n', start);
+            return nl >= 0 && nl < text.Length - 1 ? text[(nl + 1)..] : text[start..];
+        }
+        catch
+        {
+            return null;
         }
     }
 }

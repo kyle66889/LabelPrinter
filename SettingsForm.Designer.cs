@@ -24,8 +24,13 @@ partial class SettingsForm
         chkRunAtStartup = new CheckBox();
         chkAllowLan = new CheckBox();
         btnSave = new Button();
-        lblLog = new Label();
+        tabLog = new TabControl();
+        tabRunLog = new TabPage();
+        tabFailures = new TabPage();
         txtLog = new TextBox();
+        pnlFailureToolbar = new Panel();
+        chkSelectAllFailures = new CheckBox();
+        lvFailures = new ListView();
         SuspendLayout();
         //
         // lblHost
@@ -111,29 +116,72 @@ partial class SettingsForm
         btnSave.Text = "保存并应用";
         btnSave.Click += BtnSave_Click;
         //
-        // lblLog
+        // tabLog
         //
-        lblLog.AutoSize = true;
-        lblLog.Location = new Point(16, 318);
-        lblLog.Text = "Log:";
+        tabLog.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        tabLog.Location = new Point(16, 316);
+        tabLog.Size = new Size(876, 162);
+        tabLog.Controls.Add(tabRunLog);
+        tabLog.Controls.Add(tabFailures);
+        //
+        // tabRunLog
+        //
+        tabRunLog.Text = "运行日志";
+        tabRunLog.Controls.Add(txtLog);
+        //
+        // tabFailures — Dock order matters: Fill must be added BEFORE Top so the
+        // layout engine shrinks the list under the toolbar. Adding Top first then Fill
+        // makes Fill claim the whole page; the 36px toolbar then covers the column
+        // headers and the first row — with one failure the list looks completely empty
+        // while the tab title still shows "(1)".
+        tabFailures.Text = "失败日志";
+        tabFailures.Controls.Add(lvFailures);
+        tabFailures.Controls.Add(pnlFailureToolbar);
         //
         // txtLog
         //
-        txtLog.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        txtLog.Dock = DockStyle.Fill;
         txtLog.Font = new Font("Consolas", 9F);
-        txtLog.Location = new Point(16, 338);
         txtLog.Multiline = true;
         txtLog.ReadOnly = true;
         txtLog.ScrollBars = ScrollBars.Vertical;
-        txtLog.Size = new Size(876, 140);
+        //
+        // pnlFailureToolbar
+        //
+        pnlFailureToolbar.Dock = DockStyle.Top;
+        pnlFailureToolbar.Height = 40;
+        pnlFailureToolbar.Padding = new Padding(6, 0, 8, 0);
+        pnlFailureToolbar.Controls.Add(chkSelectAllFailures);
+        // btnRetryFailed / btnClearFailed / cboFailureFilter are built in SettingsForm.cs
+        // (LoadUi) — see BuildRetryFailedButton() / LayoutFailureToolbar().
+        //
+        // chkSelectAllFailures
+        //
+        chkSelectAllFailures.AutoSize = true;
+        chkSelectAllFailures.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        chkSelectAllFailures.Location = new Point(6, 10);
+        chkSelectAllFailures.Text = "全选";
+        chkSelectAllFailures.CheckedChanged += ChkSelectAllFailures_CheckedChanged;
+        //
+        // lvFailures
+        //
+        lvFailures.Dock = DockStyle.Fill;
+        lvFailures.Font = new Font("Consolas", 9F);
+        lvFailures.View = View.Details;
+        lvFailures.FullRowSelect = true;
+        lvFailures.CheckBoxes = true;
+        lvFailures.HideSelection = false;
+        lvFailures.Columns.Add("时间", 130);
+        lvFailures.Columns.Add("原因", 120);
+        lvFailures.Columns.Add("文件", 260);
+        lvFailures.Columns.Add("详情", 320);
         //
         // SettingsForm
         //
         AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
         ClientSize = new Size(908, 506);
-        Controls.Add(txtLog);
-        Controls.Add(lblLog);
+        Controls.Add(tabLog);
         Controls.Add(btnSave);
         Controls.Add(chkAllowLan);
         Controls.Add(chkRunAtStartup);
@@ -164,6 +212,11 @@ partial class SettingsForm
     private CheckBox chkRunAtStartup;
     private CheckBox chkAllowLan;
     private Button btnSave;
-    private Label lblLog;
+    private TabControl tabLog;
+    private TabPage tabRunLog;
+    private TabPage tabFailures;
     private TextBox txtLog;
+    private Panel pnlFailureToolbar;
+    private CheckBox chkSelectAllFailures;
+    private ListView lvFailures;
 }

@@ -32,6 +32,7 @@ public sealed class LodopCompatListener : IDisposable
     private readonly List<LodopLoopbackHttpsServer> _httpsServers = new();
     private readonly List<int> _httpsPorts = new();
     private X509Certificate2? _httpsCert;
+    private LodopPrintQueue? _printQueue;
 
     /// <summary>HTTP + HTTPS ports this instance managed to bind.</summary>
     public IReadOnlyList<int> BoundPorts =>
@@ -47,12 +48,25 @@ public sealed class LodopCompatListener : IDisposable
     public void Start()
     {
         Stop();
+        _printQueue = new LodopPrintQueue(
+            printerName: () => _config.PrinterName,
+            fetchPdf: FetchPdfBytes,
+            printPdf: (bytes, printer) =>
+                _printModel.PrintTo(Convert.ToBase64String(bytes), printer, LabelPrintType.Pdf),
+            log: _log,
+            storePath: LodopQueueStore.DefaultPath);
+
         StartOne(PrimaryPort);
         StartOne(FallbackPort);
         StartHttps(HttpsPrimaryPort);
         StartHttps(HttpsFallbackPort);
         if (_httpsCert is not null)
             LodopCompatCertificate.EnsureTrustedRootAsync(_httpsCert, _log);
+
+        var pruned = LodopFailureReport.PruneOldAuditFiles(
+            Path.Combine(AppContext.BaseDirectory, "logs"), keepDays: 30);
+        if (pruned > 0)
+            _log($"Lodop-compat: pruned {pruned} failure audit file(s) older than 30 days.");
 
         if (_ports.Count == 0 && _httpsPorts.Count == 0)
             _log("Lodop-compat: failed to bind HTTP (8000/18000) and HTTPS (8443/8444) — feature is unavailable.");
@@ -136,6 +150,9 @@ public sealed class LodopCompatListener : IDisposable
         _httpsPorts.Clear();
         // Do not Dispose _httpsCert — it lives in CurrentUser\My; disposing breaks the key handle.
         _httpsCert = null;
+
+        _printQueue?.Dispose();
+        _printQueue = null;
     }
 
     private async Task ListenAsync(HttpListener listener, int port, CancellationToken token)
@@ -250,58 +267,41 @@ public sealed class LodopCompatListener : IDisposable
 
     private LodopHttpResult HandlePrint(string body, int port)
     {
-        if (!PrintModel.TryBeginJob())
+        if (string.IsNullOrWhiteSpace(_config.PrinterName))
         {
-            _log($"Lodop-compat [{port}]: busy — rejected (503).");
-            return LodopHttpResult.Text(503, "text/plain; charset=utf-8", "Printer busy, retry shortly.");
+            _log($"Lodop-compat [{port}]: no printer configured.");
+            return LodopHttpResult.Text(500, "text/plain; charset=utf-8", "No printer configured for Lodop compatibility.");
         }
 
+        string? pdfUrl;
         try
         {
-            if (string.IsNullOrWhiteSpace(_config.PrinterName))
-            {
-                _log($"Lodop-compat [{port}]: no printer configured.");
-                return LodopHttpResult.Text(500, "text/plain; charset=utf-8", "No printer configured for Lodop compatibility.");
-            }
-
-            string? pdfUrl;
-            try
-            {
-                using var doc = JsonDocument.Parse(body);
-                pdfUrl = doc.RootElement.GetProperty("pdfUrl").GetString();
-            }
-            catch (Exception ex)
-            {
-                return LodopHttpResult.Text(400, "text/plain; charset=utf-8", $"Invalid request body: {ex.Message}");
-            }
-
-            if (string.IsNullOrWhiteSpace(pdfUrl))
-                return LodopHttpResult.Text(400, "text/plain; charset=utf-8", "pdfUrl is required.");
-
-            byte[] pdfBytes;
-            try
-            {
-                pdfBytes = FetchPdfBytes(pdfUrl);
-            }
-            catch (Exception ex)
-            {
-                _log($"Lodop-compat [{port}]: failed to fetch '{pdfUrl}': {ex.Message}");
-                return LodopHttpResult.Text(502, "text/plain; charset=utf-8", $"Failed to fetch PDF: {ex.Message}");
-            }
-
-            _printModel.PrintTo(Convert.ToBase64String(pdfBytes), _config.PrinterName, LabelPrintType.Pdf);
-            _log($"Lodop-compat [{port}]: printed '{pdfUrl}' to {_config.PrinterName}.");
-            return LodopHttpResult.Text(200, "text/plain; charset=utf-8", "OK");
+            using var doc = JsonDocument.Parse(body);
+            pdfUrl = doc.RootElement.GetProperty("pdfUrl").GetString();
         }
         catch (Exception ex)
         {
-            _log($"Lodop-compat [{port}]: print failed: {ex.Message}");
-            return LodopHttpResult.Text(500, "text/plain; charset=utf-8", ex.Message);
+            return LodopHttpResult.Text(400, "text/plain; charset=utf-8", $"Invalid request body: {ex.Message}");
         }
-        finally
+
+        if (string.IsNullOrWhiteSpace(pdfUrl))
+            return LodopHttpResult.Text(400, "text/plain; charset=utf-8", "pdfUrl is required.");
+
+        var queue = _printQueue;
+        if (queue is null)
+            return LodopHttpResult.Text(503, "text/plain; charset=utf-8", "Print queue not started.");
+
+        // Enqueue and return immediately so MZL's postback navigation does not abort a
+        // long-running PDF fetch/print still tied to this HTTP request.
+        if (!queue.TryEnqueue(pdfUrl, port, out var depth))
         {
-            PrintModel.EndJob();
+            _log($"Lodop FAIL [queue_full] '{pdfUrl}' — port={port}; max={LodopPrintQueue.DefaultMaxQueued}");
+            LodopFailureReport.Record("queue_full", pdfUrl, $"port={port}; max={LodopPrintQueue.DefaultMaxQueued}");
+            return LodopHttpResult.Text(503, "text/plain; charset=utf-8", "Print queue full, retry shortly.");
         }
+
+        _log($"Lodop queued [{port}]: '{pdfUrl}' (depth {depth}).");
+        return LodopHttpResult.Text(200, "text/plain; charset=utf-8", "Queued");
     }
 
     private static byte[] FetchPdfBytes(string pdfUrl)
@@ -394,13 +394,30 @@ public sealed class LodopCompatListener : IDisposable
               SET_PRINTER_INDEX: function(index){ /* ignored: LabelPrinter's Lodop-compat row targets a single fixed printer */ },
               PRINT: function(){
                 var self = this;
-                fetch('{{baseUrl}}/lodop_print', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ pdfUrl: self._pdfUrl })
-                }).catch(function(err){
-                  console.error('LabelPrinter lodop_print failed:', err);
-                });
+                var body = JSON.stringify({ pdfUrl: self._pdfUrl });
+                var attempt = 0;
+                function send(){
+                  attempt++;
+                  fetch('{{baseUrl}}/lodop_print', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: body,
+                    keepalive: true
+                  }).then(function(r){
+                    if (r.status === 503 && attempt < 4) {
+                      setTimeout(send, 250 * attempt);
+                      return;
+                    }
+                    if (!r.ok) console.error('LabelPrinter lodop_print failed:', r.status);
+                  }).catch(function(err){
+                    if (attempt < 4) {
+                      setTimeout(send, 250 * attempt);
+                      return;
+                    }
+                    console.error('LabelPrinter lodop_print failed:', err);
+                  });
+                }
+                send();
               }
             };
             """;
