@@ -21,7 +21,7 @@
 
 不需要自己编译：在 [Releases 页面](https://github.com/FBD-Groups/LabelPrinter/releases/latest) 下载最新的 `LabelPrinter-win-x64.zip`，解压后直接运行 `LabelPrinter.exe` 即可——自包含发布，已内置 .NET 8 运行时，目标机器无需额外安装任何东西。
 
-当前推荐版本：**[v1.1.2](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.2)**（PDFium 渲染修空白页 + 连扫队列）。
+当前推荐版本：**[v1.1.3](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.3)**（首次默认 MZL + 开机自启）。
 
 ## 环境要求
 

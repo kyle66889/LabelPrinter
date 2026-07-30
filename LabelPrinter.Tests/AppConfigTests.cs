@@ -20,6 +20,41 @@ public class AppConfigTests
         Assert.Equal(48212, formats[2].Port);
         Assert.True(formats[2].IsDefault);
         Assert.All(formats, f => Assert.Equal(f.Size, f.Alias));
+        // First-run defaults: size rows off; MZL compat is the only enabled path.
+        Assert.All(formats, f => Assert.False(f.Enabled));
+    }
+
+    [Fact]
+    public void FirstRunDefaults_enable_startup_and_lodop_only()
+    {
+        var config = AppConfig.CreateFirstRunDefaults(new[] { "OneNote", "BIXOLON XD3-40d - BPL-Z", "Fax" });
+
+        Assert.True(config.RunAtStartup);
+        Assert.True(config.LodopCompat.Enabled);
+        Assert.Equal("BIXOLON XD3-40d - BPL-Z", config.LodopCompat.PrinterName);
+        Assert.All(config.LabelFormats, f => Assert.False(f.Enabled));
+    }
+
+    [Fact]
+    public void PickDefaultLodopPrinterName_falls_back_to_first_when_no_bixolon()
+    {
+        Assert.Equal("OneNote", AppConfig.PickDefaultLodopPrinterName(new[] { "OneNote", "Fax" }));
+        Assert.Equal("", AppConfig.PickDefaultLodopPrinterName(Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void EnsureLodopPrinterIfEmpty_only_fills_blank_name()
+    {
+        var config = new AppConfig
+        {
+            LodopCompat = new LodopCompatConfig { Enabled = true, PrinterName = "Keep Me" }
+        };
+        Assert.False(config.EnsureLodopPrinterIfEmpty(new[] { "BIXOLON X" }));
+        Assert.Equal("Keep Me", config.LodopCompat.PrinterName);
+
+        config.LodopCompat.PrinterName = "";
+        Assert.True(config.EnsureLodopPrinterIfEmpty(new[] { "BIXOLON X" }));
+        Assert.Equal("BIXOLON X", config.LodopCompat.PrinterName);
     }
 
     [Fact]
@@ -68,6 +103,7 @@ public class AppConfigTests
     public void FindFormatByAlias_matches_enabled_format_case_insensitively()
     {
         var config = new AppConfig { LabelFormats = AppConfig.CreateDefaultFormats() };
+        config.LabelFormats[2].Enabled = true;
 
         var match = config.FindFormatByAlias("4X6");
 
@@ -101,6 +137,8 @@ public class AppConfigTests
     public void ValidateFormats_flags_duplicate_port_among_enabled_formats()
     {
         var config = new AppConfig { LabelFormats = AppConfig.CreateDefaultFormats() };
+        config.LabelFormats[0].Enabled = true;
+        config.LabelFormats[1].Enabled = true;
         config.LabelFormats[0].Port = config.LabelFormats[1].Port; // 4x2 and 4x3 collide
 
         var errors = config.ValidateFormats();

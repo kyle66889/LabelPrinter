@@ -1,3 +1,4 @@
+using System.Drawing.Printing;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LabelPrinter.Printing;
@@ -13,7 +14,8 @@ public sealed class AppConfig
     public bool AllowLanAccess { get; set; }
     public int ReconnectDelaySeconds { get; set; } = 5;
     public int WebSocketConnectTimeoutSeconds { get; set; } = 10;
-    public bool RunAtStartup { get; set; }
+    // First-run default: on. Existing appsettings.json values are preserved on upgrade.
+    public bool RunAtStartup { get; set; } = true;
     public string Language { get; set; } = "zh"; // "zh" or "en"
 
     public List<LabelFormat> LabelFormats { get; set; } = new();
@@ -27,12 +29,77 @@ public sealed class AppConfig
     public string RestListenPrefix { get; set; } = "";
     public bool EnableRestEndpoint { get; set; } = true;
 
+    /// <summary>
+    /// Size rows for a brand-new install: present in the UI but disabled. MZL compat is
+    /// the path that starts enabled (see <see cref="CreateFirstRunDefaults"/>).
+    /// </summary>
     public static List<LabelFormat> CreateDefaultFormats() => new()
     {
-        new LabelFormat { Size = "4x2", Alias = "4x2", Port = 48210, PrintType = LabelPrintType.Epl, Enabled = true },
-        new LabelFormat { Size = "4x3", Alias = "4x3", Port = 48211, PrintType = LabelPrintType.Epl, Enabled = true },
-        new LabelFormat { Size = "4x6", Alias = "4x6", Port = 48212, PrintType = LabelPrintType.Epl, Enabled = true, IsDefault = true }
+        new LabelFormat { Size = "4x2", Alias = "4x2", Port = 48210, PrintType = LabelPrintType.Epl, Enabled = false },
+        new LabelFormat { Size = "4x3", Alias = "4x3", Port = 48211, PrintType = LabelPrintType.Epl, Enabled = false },
+        new LabelFormat { Size = "4x6", Alias = "4x6", Port = 48212, PrintType = LabelPrintType.Epl, Enabled = false, IsDefault = true }
     };
+
+    /// <summary>
+    /// Defaults used when there is no usable appsettings.json yet (corrupt/missing).
+    /// Prefer a BIXOLON printer for MZL when one is installed.
+    /// </summary>
+    public static AppConfig CreateFirstRunDefaults(IEnumerable<string>? installedPrinters = null) => new()
+    {
+        RunAtStartup = true,
+        LabelFormats = CreateDefaultFormats(),
+        LodopCompat = new LodopCompatConfig
+        {
+            Enabled = true,
+            PrinterName = PickDefaultLodopPrinterName(installedPrinters)
+        }
+    };
+
+    /// <summary>
+    /// Prefers any installed printer whose name contains "bixolon" (case-insensitive);
+    /// otherwise the first installed printer; otherwise empty (user sets later).
+    /// </summary>
+    public static string PickDefaultLodopPrinterName(IEnumerable<string>? installedPrinters = null)
+    {
+        string? bixolon = null;
+        string? first = null;
+        foreach (var name in installedPrinters ?? EnumerateInstalledPrinters())
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+            first ??= name;
+            if (name.Contains("bixolon", StringComparison.OrdinalIgnoreCase))
+            {
+                bixolon = name;
+                break;
+            }
+        }
+
+        return bixolon ?? first ?? "";
+    }
+
+    private static IEnumerable<string> EnumerateInstalledPrinters()
+    {
+        foreach (string name in PrinterSettings.InstalledPrinters)
+            yield return name;
+    }
+
+    /// <summary>
+    /// If MZL has no printer yet, fill one from the installed list. Returns true when
+    /// the name changed (caller may persist). Does not change an already-set name.
+    /// </summary>
+    public bool EnsureLodopPrinterIfEmpty(IEnumerable<string>? installedPrinters = null)
+    {
+        if (!string.IsNullOrWhiteSpace(LodopCompat.PrinterName))
+            return false;
+
+        var picked = PickDefaultLodopPrinterName(installedPrinters);
+        if (string.IsNullOrEmpty(picked))
+            return false;
+
+        LodopCompat.PrinterName = picked;
+        return true;
+    }
 
     /// <summary>
     /// Ensures LabelFormats is populated. If empty (e.g. loading an old config file),
@@ -87,25 +154,41 @@ public sealed class AppConfig
 
     public static AppConfig Load()
     {
-        var config = new AppConfig();
+        var path = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        AppConfig config;
         try
         {
-            var builder = new ConfigurationBuilder()
-                .SetBasePath(AppContext.BaseDirectory)
-                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false);
+            if (!File.Exists(path))
+            {
+                // True first launch with no packaged config: MZL-only + startup + BIXOLON pick.
+                config = CreateFirstRunDefaults();
+                try { config.Save(); } catch { /* best-effort */ }
+            }
+            else
+            {
+                config = new AppConfig();
+                var builder = new ConfigurationBuilder()
+                    .SetBasePath(AppContext.BaseDirectory)
+                    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false);
 
-            var root = builder.Build();
-            root.GetSection("LabelPrinter").Bind(config);
+                var root = builder.Build();
+                root.GetSection("LabelPrinter").Bind(config);
+                config.MigrateLegacy();
+                // Packaged template ships PrinterName=""; fill once so Settings isn't empty.
+                if (config.EnsureLodopPrinterIfEmpty())
+                {
+                    try { config.Save(); } catch { /* best-effort */ }
+                }
+            }
         }
         catch (Exception ex)
         {
             // A corrupt/half-written appsettings.json must not stop the app from starting.
-            // Log it and fall back to defaults; the user can re-save from the settings UI.
+            // Log it and fall back to first-run defaults; the user can re-save from Settings.
             FileLog.Write($"Config load failed, falling back to defaults: {ex.Message}");
-            config = new AppConfig();
+            config = CreateFirstRunDefaults();
         }
 
-        config.MigrateLegacy();
         L.SetLanguage(L.Parse(config.Language));
         return config;
     }
@@ -166,6 +249,7 @@ public sealed class AppConfig
 /// </summary>
 public sealed class LodopCompatConfig
 {
-    public bool Enabled { get; set; }
+    // First-run / property default: on. Persisted appsettings values always win after Save.
+    public bool Enabled { get; set; } = true;
     public string PrinterName { get; set; } = "";
 }
