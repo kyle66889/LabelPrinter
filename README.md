@@ -106,6 +106,21 @@ dotnet build -c Release
 }
 ```
 
+> 以上是字段全貌（各字段含义见下表）。**v1.1.3 起，全新安装（尚无 `appsettings.json`）生成的实际默认值并非如此**，见下方「首次安装默认值」。已存在的 `appsettings.json`（升级场景）不受影响，原有值照常保留。
+
+### 首次安装默认值（v1.1.3+）
+
+仅当 exe 同目录**没有** `appsettings.json`（全新安装/全新目录）时生效，升级覆盖已有安装不会改动现有配置：
+
+| 配置项 | 首次安装默认值 |
+|--------|----------------|
+| `RunAtStartup` | `true`（开机自启） |
+| `LabelFormats`（4x2/4x3/4x6） | 全部 `Enabled: false`，保留在界面里但不监听端口，按需自行开启 |
+| `LodopCompat.Enabled` | `true`（MZL 兼容默认启用） |
+| `LodopCompat.PrinterName` | 自动挑选：已安装打印机里名称包含 `bixolon`（不区分大小写）的优先；没有则选系统安装列表里的第一台；都没有则留空，需在设置界面手动选 |
+
+也就是说全新安装开箱即用的路径是「MZL 打印运单」，4x2/4x3/4x6 这几个固定尺寸端口默认关闭，需要用的话自己在设置里勾选启用。
+
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `LabelPrinterUrl` | RMA WebSocket 地址 | `ws://localhost:2012/websocket` |
@@ -113,9 +128,9 @@ dotnet build -c Release
 | `AllowLanAccess` | REST 监听地址：`true` 绑定 `http://+:<port>/`（局域网内其他机器可访问，需以管理员身份运行或提前执行 `netsh http add urlacl`）；`false` 仅绑定 `http://localhost:<port>/` | `false` |
 | `ReconnectDelaySeconds` | WebSocket 断线重连间隔（秒） | `5` |
 | `WebSocketConnectTimeoutSeconds` | WebSocket 连接超时（秒） | `10` |
-| `RunAtStartup` | 是否开机自启 | `false` |
+| `RunAtStartup` | 是否开机自启 | 首次安装 `true`；升级保留原值 |
 | `LabelFormats` | 标签尺寸列表，固定三项（4x2 / 4x3 / 4x6），见下表 | — |
-| `LodopCompat` | MZL C-Lodop 兼容：`Enabled` / `PrinterName`（建议选能打 PDF 的 Windows 打印机） | 关闭 |
+| `LodopCompat` | MZL C-Lodop 兼容：`Enabled` / `PrinterName`（建议选能打 PDF 的 Windows 打印机） | 首次安装启用+自动选打印机（见上）；升级保留原值 |
 
 `LabelFormats` 每一项的字段：
 
@@ -126,7 +141,7 @@ dotnet build -c Release
 | `PrinterName` | 目标打印机：Windows 打印机名称，或并口 `LPT1` / `LPT2` / `LPT3` | 空 |
 | `PrintType` | 打印类型：`Epl` / `Zpl` / `Text` / `Pdf` | `Epl` |
 | `Port` | 该尺寸独立的 REST 监听端口 | `4x2`=48210，`4x3`=48211，`4x6`=48212 |
-| `Enabled` | 是否启用该尺寸（禁用则不监听 REST，也不会被 WebSocket 路由到） | `true` |
+| `Enabled` | 是否启用该尺寸（禁用则不监听 REST，也不会被 WebSocket 路由到） | 首次安装 `false`；升级保留原值 |
 | `IsDefault` | 是否为默认尺寸（仅设置界面单选高亮，不影响打印路由） | 仅 `4x6` 为 `true` |
 
 ## 消息格式
@@ -213,6 +228,7 @@ MZL「打印运单」走浏览器里的 C-Lodop 脚本。启用设置里的 **MZ
 **使用注意：**
 
 - 浏览器与 LabelPrinter 须在**同一台电脑**；请卸载本机真实 C-Lodop，避免抢端口
+- 生产环境请选**真实标签机**（如 BIXOLON），首次安装的自动选择也优先匹配 bixolon 设备；`Microsoft Print to PDF` / `OneNote` 等虚拟打印机仅适合联调测试，不要用于正式打印
 - https 站点首次会安装自签证书；若脚本加载失败，**重启浏览器**后再试
 - 新版 Chrome 若仍拦本机访问：`chrome://flags/#local-network-access-check` → Disabled
 - 「打印成功」表示已交给 Windows 打印队列，不等于纸一定已出
