@@ -8,6 +8,7 @@
     <RootNamespace>LabelPrinter</RootNamespace>
     <AssemblyName>LabelPrinter</AssemblyName>
     <Description>Label Printer Service tray application</Description>
+    <Version>1.1.4</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <DefaultItemExcludes>$(DefaultItemExcludes);LabelPrinter.Tests\**</DefaultItemExcludes>
   </PropertyGroup>
