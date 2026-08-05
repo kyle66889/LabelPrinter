@@ -601,7 +601,7 @@ public partial class SettingsForm : Form
 
     private void ApplyLanguage()
     {
-        Text = L.T("title");
+        Text = $"{L.T("title")}  v{Application.ProductVersion}";
         lblHost.Text = $"{L.T("host")}: {_localIp}";
         lblWsUrl.Text = L.T("websocket");
         chkEnableWebSocket.Text = L.T("enable");
