@@ -196,7 +196,7 @@ partial class SettingsForm
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         Name = "SettingsForm";
         StartPosition = FormStartPosition.CenterScreen;
-        Text = "Label Printer Service - 设置  v1.1.4";
+        Text = "Label Printer Service - 设置  v1.1.5";
         FormClosing += SettingsForm_FormClosing;
         ResumeLayout(false);
         PerformLayout();

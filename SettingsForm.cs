@@ -670,7 +670,7 @@ public partial class SettingsForm : Form
             return;
         }
 
-        txtLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+        txtLog.AppendText($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}");
         RefreshFailureList();
     }
 
