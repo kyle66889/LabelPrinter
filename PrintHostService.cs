@@ -15,6 +15,13 @@ public sealed class PrintHostService : IDisposable
 
     public bool IsWebSocketConnected => _webSocketListener?.IsConnected == true;
 
+    public IReadOnlyList<int> LodopBoundPorts => _lodopCompatListener?.BoundPorts ?? Array.Empty<int>();
+
+    // Owned here, not by the listener: Save && Apply rebuilds the listener, and the counts must survive that.
+    private readonly LodopRequestStats _lodopStats = new();
+
+    public LodopRequestSnapshot? LodopRequestStats => _lodopCompatListener is null ? null : _lodopStats.Snapshot();
+
     public void Start(AppConfig config)
     {
         Stop();
@@ -40,7 +47,7 @@ public sealed class PrintHostService : IDisposable
             // http://test/fbd.shipswithus.com → localhost:8000 is blocked by Chrome unless
             // the browser allows that origin local/loopback access (see BrowserLocalAccessPolicy).
             BrowserLocalAccessPolicy.TryApply(Log);
-            _lodopCompatListener = new LodopCompatListener(_config.LodopCompat, _printModel, Log);
+            _lodopCompatListener = new LodopCompatListener(_config.LodopCompat, _printModel, Log, _lodopStats);
             _lodopCompatListener.Start();
         }
 

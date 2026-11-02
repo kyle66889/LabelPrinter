@@ -34,15 +34,23 @@ public sealed class LodopCompatListener : IDisposable
     private X509Certificate2? _httpsCert;
     private LodopPrintQueue? _printQueue;
 
-    /// <summary>HTTP + HTTPS ports this instance managed to bind.</summary>
-    public IReadOnlyList<int> BoundPorts =>
-        _ports.Select(p => p.Number).Concat(_httpsPorts).ToList();
+    // Replaced as a whole when Start()/Stop() finish, so other threads (the settings window's
+    // self-check) never enumerate _ports/_httpsPorts while they are being modified.
+    private volatile int[] _boundSnapshot = Array.Empty<int>();
 
-    public LodopCompatListener(LodopCompatConfig config, PrintModel printModel, Action<string> log)
+    /// <summary>HTTP + HTTPS ports this instance managed to bind (empty while Start() is running).</summary>
+    public IReadOnlyList<int> BoundPorts => _boundSnapshot;
+
+    /// <summary>Browser-request counters; pass one in to keep the counts across listener restarts.</summary>
+    public LodopRequestStats Stats { get; }
+
+    public LodopCompatListener(
+        LodopCompatConfig config, PrintModel printModel, Action<string> log, LodopRequestStats? stats = null)
     {
         _config = config;
         _printModel = printModel;
         _log = log;
+        Stats = stats ?? new LodopRequestStats();
     }
 
     public void Start()
@@ -60,6 +68,7 @@ public sealed class LodopCompatListener : IDisposable
         StartOne(FallbackPort);
         StartHttps(HttpsPrimaryPort);
         StartHttps(HttpsFallbackPort);
+        _boundSnapshot = _ports.Select(p => p.Number).Concat(_httpsPorts).ToArray();
         if (_httpsCert is not null)
             LodopCompatCertificate.EnsureTrustedRootAsync(_httpsCert, _log);
 
@@ -132,6 +141,7 @@ public sealed class LodopCompatListener : IDisposable
 
     public void Stop()
     {
+        _boundSnapshot = Array.Empty<int>();
         foreach (var p in _ports)
         {
             p.Cts.Cancel();
@@ -187,12 +197,16 @@ public sealed class LodopCompatListener : IDisposable
                     bodyTooLarge = true;
             }
 
+            var origin = ctx.Request.Headers["Origin"];
+            var fromBrowser = LodopRequestStats.IsBrowserPageRequest(
+                origin, ctx.Request.Headers["Referer"], ctx.Request.Headers["Sec-Fetch-Site"]);
             var exchange = new LodopHttpExchange(
                 ctx.Request.HttpMethod,
                 ctx.Request.Url?.AbsolutePath ?? "/",
-                ctx.Request.Headers["Origin"],
+                origin,
                 body,
-                bodyTooLarge);
+                bodyTooLarge,
+                fromBrowser);
 
             var result = Dispatch(exchange, port, https: false);
             WriteCors(ctx.Request, ctx.Response);
@@ -223,10 +237,13 @@ public sealed class LodopCompatListener : IDisposable
         }
     }
 
-    private LodopHttpResult Dispatch(LodopHttpExchange exchange, int port, bool https)
+    internal LodopHttpResult Dispatch(LodopHttpExchange exchange, int port, bool https)
     {
         try
         {
+            if (exchange.FromBrowser)
+                Stats.Record(exchange.Method, exchange.Path, exchange.Origin);
+
             if (exchange.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
                 return LodopHttpResult.Empty(204);
 

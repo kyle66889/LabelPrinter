@@ -101,7 +101,7 @@ internal sealed class LodopLoopbackHttpsServer : IDisposable
         }
     }
 
-    private static async Task<LodopHttpExchange?> ReadRequestAsync(Stream stream, CancellationToken token)
+    internal static async Task<LodopHttpExchange?> ReadRequestAsync(Stream stream, CancellationToken token)
     {
         using var ms = new MemoryStream();
         var buffer = new byte[4096];
@@ -132,6 +132,8 @@ internal sealed class LodopLoopbackHttpsServer : IDisposable
                 path = path[..q];
 
             string? origin = null;
+            string? referer = null;
+            string? secFetchSite = null;
             var contentLength = 0;
             for (var i = 1; i < lines.Length; i++)
             {
@@ -143,17 +145,23 @@ internal sealed class LodopLoopbackHttpsServer : IDisposable
                 var value = line[(colon + 1)..].Trim();
                 if (name.Equals("Origin", StringComparison.OrdinalIgnoreCase))
                     origin = value;
+                else if (name.Equals("Referer", StringComparison.OrdinalIgnoreCase))
+                    referer = value;
+                else if (name.Equals("Sec-Fetch-Site", StringComparison.OrdinalIgnoreCase))
+                    secFetchSite = value;
                 else if (name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)
                          && int.TryParse(value, out var len))
                     contentLength = len;
             }
+
+            var fromBrowser = LodopRequestStats.IsBrowserPageRequest(origin, referer, secFetchSite);
 
             var bodyStart = headerEnd + 4;
             var body = Array.Empty<byte>();
             if (contentLength > 0)
             {
                 if (contentLength > 8 * 1024)
-                    return new LodopHttpExchange(method, path, origin, null, BodyTooLarge: true);
+                    return new LodopHttpExchange(method, path, origin, null, BodyTooLarge: true, FromBrowser: fromBrowser);
 
                 body = new byte[contentLength];
                 var already = (int)ms.Length - bodyStart;
@@ -171,7 +179,7 @@ internal sealed class LodopLoopbackHttpsServer : IDisposable
             }
 
             var bodyText = body.Length == 0 ? "" : Encoding.UTF8.GetString(body);
-            return new LodopHttpExchange(method, path, origin, bodyText, BodyTooLarge: false);
+            return new LodopHttpExchange(method, path, origin, bodyText, BodyTooLarge: false, FromBrowser: fromBrowser);
         }
 
         return null;
@@ -233,7 +241,8 @@ internal sealed record LodopHttpExchange(
     string Path,
     string? Origin,
     string? Body,
-    bool BodyTooLarge);
+    bool BodyTooLarge,
+    bool FromBrowser = false);
 
 internal sealed record LodopHttpResult(int StatusCode, string ContentType, byte[] Body)
 {
