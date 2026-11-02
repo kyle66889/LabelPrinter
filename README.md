@@ -21,7 +21,7 @@
 
 不需要自己编译：在 [Releases 页面](https://github.com/FBD-Groups/LabelPrinter/releases/latest) 下载最新的 `LabelPrinter-win-x64.zip`，解压后直接运行 `LabelPrinter.exe` 即可——自包含发布，已内置 .NET 8 运行时，目标机器无需额外安装任何东西。
 
-当前版本：**v1.1.6**（新增 MZL 兼容性自检、一键放行浏览器、重复启动时可接管旧版）。上一发布版本为 [v1.1.5](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.5)（运行日志带完整日期）。
+当前推荐版本：**[v1.1.6](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.6)**（新增 MZL 兼容性自检、一键放行浏览器、重复启动时可接管旧版）。上一版本为 [v1.1.5](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.5)（运行日志带完整日期）。
 
 ## 环境要求
 
