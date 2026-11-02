@@ -31,6 +31,11 @@ partial class SettingsForm
         pnlFailureToolbar = new Panel();
         chkSelectAllFailures = new CheckBox();
         lvFailures = new ListView();
+        btnSelfCheck = new Button();
+        tabSelfCheck = new TabPage();
+        txtSelfCheck = new TextBox();
+        pnlSelfCheckToolbar = new Panel();
+        toolTip = new ToolTip();
         SuspendLayout();
         //
         // lblHost
@@ -71,9 +76,21 @@ partial class SettingsForm
         //
         cboLanguage.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         cboLanguage.DropDownStyle = ComboBoxStyle.DropDownList;
-        cboLanguage.Location = new Point(800, 13);
+        cboLanguage.Location = new Point(764, 13);
         cboLanguage.Size = new Size(92, 23);
         cboLanguage.Items.AddRange(new object[] { "中文", "English" });
+        //
+        // btnSelfCheck — gear at the top-right corner; runs the MZL compatibility self-check
+        //
+        btnSelfCheck.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        btnSelfCheck.Location = new Point(864, 11);
+        btnSelfCheck.Size = new Size(28, 27);
+        btnSelfCheck.Font = new Font("Segoe UI Symbol", 12F);
+        btnSelfCheck.Text = "⚙";
+        btnSelfCheck.TextAlign = ContentAlignment.MiddleCenter;
+        btnSelfCheck.Padding = Padding.Empty;
+        btnSelfCheck.UseVisualStyleBackColor = true;
+        btnSelfCheck.Click += BtnSelfCheck_Click;
         //
         // tlpFormats
         //
@@ -123,6 +140,28 @@ partial class SettingsForm
         tabLog.Size = new Size(876, 162);
         tabLog.Controls.Add(tabRunLog);
         tabLog.Controls.Add(tabFailures);
+        tabLog.Controls.Add(tabSelfCheck);
+        //
+        // tabSelfCheck
+        //
+        tabSelfCheck.Text = "自检日志";
+        // Fill must be added BEFORE Top (same rule as tabFailures) so the log sits under the toolbar.
+        tabSelfCheck.Controls.Add(txtSelfCheck);
+        tabSelfCheck.Controls.Add(pnlSelfCheckToolbar);
+        //
+        // pnlSelfCheckToolbar — the "allow browser" button is built in code (BuildSelfCheckToolbar)
+        //
+        pnlSelfCheckToolbar.Dock = DockStyle.Top;
+        pnlSelfCheckToolbar.Height = 40;
+        pnlSelfCheckToolbar.Padding = new Padding(6, 0, 8, 0);
+        //
+        // txtSelfCheck
+        //
+        txtSelfCheck.Dock = DockStyle.Fill;
+        txtSelfCheck.Font = new Font("Consolas", 9F);
+        txtSelfCheck.Multiline = true;
+        txtSelfCheck.ReadOnly = true;
+        txtSelfCheck.ScrollBars = ScrollBars.Vertical;
         //
         // tabRunLog
         //
@@ -186,6 +225,7 @@ partial class SettingsForm
         Controls.Add(chkAllowLan);
         Controls.Add(chkRunAtStartup);
         Controls.Add(tlpFormats);
+        Controls.Add(btnSelfCheck);
         Controls.Add(cboLanguage);
         Controls.Add(lblLanguage);
         Controls.Add(chkEnableWebSocket);
@@ -196,7 +236,7 @@ partial class SettingsForm
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         Name = "SettingsForm";
         StartPosition = FormStartPosition.CenterScreen;
-        Text = "Label Printer Service - 设置  v1.1.5";
+        Text = "Label Printer Service - 设置  v1.1.6";
         FormClosing += SettingsForm_FormClosing;
         ResumeLayout(false);
         PerformLayout();
@@ -219,4 +259,9 @@ partial class SettingsForm
     private Panel pnlFailureToolbar;
     private CheckBox chkSelectAllFailures;
     private ListView lvFailures;
+    private Button btnSelfCheck;
+    private TabPage tabSelfCheck;
+    private TextBox txtSelfCheck;
+    private Panel pnlSelfCheckToolbar;
+    private ToolTip toolTip;
 }

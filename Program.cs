@@ -23,15 +23,8 @@ static class Program
         // context (which reloads the full config) exists.
         AppConfig.Load();
 
-        if (!TryBecomeSingleInstance(out var mutex))
-        {
-            MessageBox.Show(
-                L.T("app.alreadyRunning"),
-                L.T("tray.balloon.title"),
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+        if (!TryBecomeSingleInstance(out var mutex) && !TryReplacePreviousInstance(out mutex))
             return;
-        }
 
         try
         {
@@ -79,6 +72,64 @@ static class Program
         // refusing to run. Worst case is a duplicate instance, not a crash.
         mutex = null;
         return true;
+    }
+
+    /// <summary>
+    /// Another instance holds the guard. Offers to close it so this (newer) build can start;
+    /// returns true only when the guard was re-acquired. Never closes anything without a "Yes".
+    /// </summary>
+    private static bool TryReplacePreviousInstance(out Mutex? mutex)
+    {
+        mutex = null;
+        var title = L.T("tray.balloon.title");
+        var others = PreviousInstance.FindOthers();
+        try
+        {
+            Mutex? acquired = null;
+            var result = PreviousInstance.TakeOver(
+                others,
+                confirm: description =>
+                {
+                    var answer = MessageBox.Show(
+                        L.F("app.replace.prompt", description),
+                        title, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+                    if (answer == DialogResult.Yes)
+                        FileLog.Write($"Closing previous instance(s): {description.ReplaceLineEndings(" | ")}");
+                    return answer == DialogResult.Yes;
+                },
+                tryAcquireLock: () => TryBecomeSingleInstance(out acquired),
+                stopWait: TimeSpan.FromSeconds(8),
+                lockAttempts: 10,
+                lockDelay: TimeSpan.FromMilliseconds(300));
+
+            switch (result.Outcome)
+            {
+                case TakeoverOutcome.Taken:
+                    mutex = acquired;
+                    return true;
+
+                case TakeoverOutcome.Declined:
+                    return false;
+
+                case TakeoverOutcome.NothingFound:
+                    // Held by something we can't see or identify (e.g. another session): just say so.
+                    MessageBox.Show(L.T("app.alreadyRunning"), title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return false;
+
+                default:
+                    var reason = result.Outcome == TakeoverOutcome.LockStillHeld
+                        ? L.T("app.replace.stillHeld")
+                        : result.Detail;
+                    FileLog.Write($"Could not take over from previous instance: {reason}");
+                    MessageBox.Show(L.F("app.replace.failed", reason), title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+            }
+        }
+        finally
+        {
+            foreach (var handle in others)
+                handle.Dispose();
+        }
     }
 
     private static void HandleFatal(string source, Exception? ex)

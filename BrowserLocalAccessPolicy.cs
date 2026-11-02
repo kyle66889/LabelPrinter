@@ -13,7 +13,8 @@ namespace LabelPrinter;
 public static class BrowserLocalAccessPolicy
 {
     // URL patterns Chrome accepts for these list policies (see chromeenterprise.google/policies).
-    private static readonly string[] AllowedOrigins =
+    // Shared with the self-check's one-click fix script so there is a single list to maintain.
+    public static readonly string[] AllowedOrigins =
     [
         "http://test.shipswithus.com:8080",
         "http://test.shipswithus.com:*",
@@ -27,7 +28,7 @@ public static class BrowserLocalAccessPolicy
         "http://127.0.0.1:*",
     ];
 
-    private static readonly string[] BrowserPolicyRoots =
+    public static readonly string[] BrowserPolicyRoots =
     [
         @"Software\Policies\Google\Chrome",
         @"Software\Policies\Microsoft\Edge",
@@ -75,8 +76,6 @@ public static class BrowserLocalAccessPolicy
 
         changed |= WriteUrlList($@"{root}\InsecurePrivateNetworkRequestsAllowedForUrls", AllowedOrigins);
         changed |= WriteUrlList($@"{root}\LocalNetworkAccessAllowedForUrls", AllowedOrigins);
-        // Chrome 146+ splits loopback out of "local network".
-        changed |= WriteUrlList($@"{root}\LoopbackNetworkAccessAllowedForUrls", AllowedOrigins);
 
         return changed;
     }

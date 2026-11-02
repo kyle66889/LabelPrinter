@@ -25,6 +25,7 @@ public partial class SettingsForm : Form
     private Button _lodopTestButton = null!;
     private Button btnRetryFailed = null!;
     private Button btnClearFailed = null!;
+    private Button btnAllowBrowser = null!;
     private ComboBox cboFailureFilter = null!;
     private bool _failureFilterTodayOnly;
     private bool _lastFailureFilterTodayOnly;
@@ -99,9 +100,12 @@ public partial class SettingsForm : Form
             AddFormatRow(format);
         AddLodopCompatRow(_config.LodopCompat);
         BuildRetryFailedButton();
+        BuildSelfCheckToolbar();
         // Belt-and-suspenders in case a designer reopen reorders Controls: keep Fill under Top.
         tabFailures.Controls.SetChildIndex(lvFailures, 0);
         tabFailures.Controls.SetChildIndex(pnlFailureToolbar, 1);
+        tabSelfCheck.Controls.SetChildIndex(txtSelfCheck, 0);
+        tabSelfCheck.Controls.SetChildIndex(pnlSelfCheckToolbar, 1);
 
         // Daily audit txt stays; unresolved json is never pruned here.
         var pruned = LodopFailureReport.PruneOldAuditFiles(
@@ -613,6 +617,11 @@ public partial class SettingsForm : Form
         lblLanguage.Left = cboLanguage.Left - lblLanguage.PreferredWidth - 8;
         lblLanguage.Top = cboLanguage.Top + (cboLanguage.Height - lblLanguage.PreferredHeight) / 2;
         tabRunLog.Text = L.T("log.tab.run");
+        tabSelfCheck.Text = L.T("log.tab.selfcheck");
+        toolTip.SetToolTip(btnSelfCheck, L.T("btn.selfcheck.tip"));
+        btnAllowBrowser.Text = L.T("btn.allowBrowser");
+        btnAllowBrowser.Width = Math.Max(200, TextRenderer.MeasureText(btnAllowBrowser.Text, btnAllowBrowser.Font).Width + 32);
+        toolTip.SetToolTip(btnAllowBrowser, L.T("btn.allowBrowser.tip"));
         lvFailures.Columns[0].Text = L.T("col.failTime");
         lvFailures.Columns[1].Text = L.T("col.failReason");
         lvFailures.Columns[2].Text = L.T("col.failFile");
@@ -711,6 +720,109 @@ public partial class SettingsForm : Form
         }
         lvFailures.EndUpdate();
         lvFailures.Refresh();
+    }
+
+    private bool _selfCheckRunning;
+
+    /// <summary>Fixed-size button built in code, same reason as the failure toolbar (see BuildRetryFailedButton).</summary>
+    private void BuildSelfCheckToolbar()
+    {
+        btnAllowBrowser = new Button
+        {
+            AutoSize = false,
+            Font = new Font("Segoe UI", 9F),
+            Size = new Size(200, FailureToolbarButtonHeight),
+            Location = new Point(6, Math.Max(4, (pnlSelfCheckToolbar.Height - FailureToolbarButtonHeight) / 2)),
+            Enabled = false, // only after a self-check says the browser needs allowing
+            FlatStyle = FlatStyle.System,
+            UseVisualStyleBackColor = true,
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        btnAllowBrowser.Click += BtnAllowBrowser_Click;
+        pnlSelfCheckToolbar.Controls.Add(btnAllowBrowser);
+    }
+
+    private async void BtnAllowBrowser_Click(object? sender, EventArgs e)
+    {
+        btnAllowBrowser.Enabled = false;
+        btnSelfCheck.Enabled = false;
+        AppendSelfCheck("");
+        AppendSelfCheck(L.T("sc.fix.start"));
+
+        FixOutcome outcome;
+        try
+        {
+            outcome = await AllowBrowserFix.RunAsync();
+        }
+        catch (Exception ex)
+        {
+            outcome = new FixOutcome(false, ex.Message, null, false);
+        }
+
+        var result = AllowBrowserFix.ToResult(outcome);
+        AppendSelfCheck(result.ToLogText());
+        AppendLog($"Allow browser: {result.Status} - {result.Detail}");
+
+        btnSelfCheck.Enabled = true;
+        // Success needs a browser restart + re-check before it can be used again; otherwise allow a retry.
+        btnAllowBrowser.Enabled = result.Status != CheckStatus.Ok;
+    }
+
+    /// <summary>
+    /// Runs the read-only MZL compatibility checks and streams each result into the self-check
+    /// tab as it finishes (the DNS/TLS probes can take several seconds, so no UI-thread blocking).
+    /// </summary>
+    private async void BtnSelfCheck_Click(object? sender, EventArgs e)
+    {
+        if (_selfCheckRunning)
+            return;
+        _selfCheckRunning = true;
+        btnSelfCheck.Enabled = false;
+        btnAllowBrowser.Enabled = false;
+
+        tabLog.SelectedTab = tabSelfCheck;
+        txtSelfCheck.Clear();
+        AppendSelfCheck($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {L.T("sc.start")}");
+        AppendSelfCheck(L.F("sc.env", Application.ProductVersion.Split('+')[0], $"{Environment.UserDomainName}\\{Environment.UserName}"));
+        AppendSelfCheck(L.T("sc.copyHint"));
+        AppendSelfCheck("");
+
+        try
+        {
+            var check = new MzlSelfCheck(_host, () => (string?)_lodopPrinterCombo.SelectedItem);
+            var results = await check.RunAsync(r => AppendSelfCheck(r.ToLogText()));
+
+            btnAllowBrowser.Enabled = results.Any(r => r.Action == CheckAction.AllowBrowser);
+
+            int Count(CheckStatus s) => results.Count(r => r.Status == s);
+            var summary = L.F("sc.done", Count(CheckStatus.Ok), Count(CheckStatus.Info), Count(CheckStatus.Warn), Count(CheckStatus.Fail));
+            AppendSelfCheck("");
+            AppendSelfCheck(summary);
+            if (Count(CheckStatus.Fail) == 0 && Count(CheckStatus.Warn) == 0)
+                AppendSelfCheck(L.T("sc.done.clean"));
+            AppendLog($"MZL self-check: {summary}");
+        }
+        catch (Exception ex)
+        {
+            AppendSelfCheck($"[FAIL] {ex.Message}");
+            AppendLog($"MZL self-check failed: {ex.Message}");
+        }
+        finally
+        {
+            _selfCheckRunning = false;
+            btnSelfCheck.Enabled = true;
+        }
+    }
+
+    private void AppendSelfCheck(string text)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => AppendSelfCheck(text));
+            return;
+        }
+
+        txtSelfCheck.AppendText(text + Environment.NewLine);
     }
 
     private void ChkSelectAllFailures_CheckedChanged(object? sender, EventArgs e)
