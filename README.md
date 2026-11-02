@@ -21,7 +21,7 @@
 
 不需要自己编译：在 [Releases 页面](https://github.com/FBD-Groups/LabelPrinter/releases/latest) 下载最新的 `LabelPrinter-win-x64.zip`，解压后直接运行 `LabelPrinter.exe` 即可——自包含发布，已内置 .NET 8 运行时，目标机器无需额外安装任何东西。
 
-当前推荐版本：**[v1.1.5](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.5)**（运行日志带完整日期）。
+当前版本：**v1.1.6**（新增 MZL 兼容性自检、一键放行浏览器、重复启动时可接管旧版）。上一发布版本为 [v1.1.5](https://github.com/FBD-Groups/LabelPrinter/releases/tag/v1.1.5)（运行日志带完整日期）。
 
 ## 环境要求
 
@@ -40,6 +40,9 @@
 | 系统托盘 | 后台常驻，托盘图标显示 WebSocket 连接状态 |
 | 设置界面 | 逐尺寸选择打印机 / 类型 / 端口 / 启用状态，显示本机局域网 IP，支持逐尺寸测试打印 |
 | MZL Lodop 兼容 | 模拟 C-Lodop 本机服务，MZL「打印运单」无需改网页；支持 http（8000/18000）与 https（8443/8444） |
+| MZL 兼容性自检（v1.1.6） | 设置窗口右上角 ⚙：只读检查 MZL 打不出的各个卡点（端口、旧 C-Lodop、打印机、域名、代理、证书、浏览器放行、请求是否到达），逐项给出解决方案，见下文「MZL 兼容性自检」 |
+| 一键放行浏览器（v1.1.6） | 自检发现 Chrome/Edge 没放行 MZL 访问本机时，弹出管理员确认，把 MZL 网站加入浏览器的放行名单 |
+| 接管旧版（v1.1.6） | 重复启动时不再只提示「已在运行」，而是询问是否关闭正在运行的旧版并继续启动（仅限本程序的进程） |
 | 打印队列 | Lodop 任务先入队再回 `200 Queued`，后台串行打印；崩溃/重启可从磁盘续打，避免连扫翻页丢单 |
 | 开机自启 | 写入当前用户注册表 `Run` 项 |
 | 自动重连 | WebSocket 断线后按配置间隔自动重试 |
@@ -72,7 +75,7 @@ dotnet build -c Release
 
 ### 运行
 
-1. 运行 `LabelPrinter.exe`（单实例，重复启动会提示已在托盘运行）
+1. 运行 `LabelPrinter.exe`（单实例；已有一份在运行时，会询问是否关闭旧版并继续启动，选「否」则新开的这份直接退出）
 2. 在系统托盘（任务栏右下角 **^**）找到图标
 3. 双击图标或右键 **设置…** 打开配置窗口
 4. 设置窗口顶部显示本机局域网 IP，供其他机器配置 REST 调用地址参考
@@ -227,11 +230,33 @@ MZL「打印运单」走浏览器里的 C-Lodop 脚本。启用设置里的 **MZ
 
 **使用注意：**
 
-- 浏览器与 LabelPrinter 须在**同一台电脑**；请卸载本机真实 C-Lodop，避免抢端口
+- 浏览器与 LabelPrinter 须在**同一台电脑、同一个 Windows 用户**下运行（证书只信任给当前用户）；请卸载本机真实 C-Lodop，避免抢端口（自检会检测）
 - 生产环境请选**真实标签机**（如 BIXOLON），首次安装的自动选择也优先匹配 bixolon 设备；`Microsoft Print to PDF` / `OneNote` 等虚拟打印机仅适合联调测试，不要用于正式打印
 - https 站点首次会安装自签证书；若脚本加载失败，**重启浏览器**后再试
-- 新版 Chrome 若仍拦本机访问：`chrome://flags/#local-network-access-check` → Disabled
+- 新版 Chrome（约 142 起）会拦截公网网页访问本机：在 MZL 页面点地址栏左边的图标，把「本地网络」/「本机应用」改为「允许」；批量部署用组策略或自检里的「一键放行浏览器」。不建议用 `--disable-features=LocalNetworkAccessChecks` 之类的启动参数关掉整个检查
 - 「打印成功」表示已交给 Windows 打印队列，不等于纸一定已出
+
+## MZL 兼容性自检
+
+MZL 点「打印运单」没反应时，点设置窗口右上角的 **⚙** 按钮。程序在后台**只读**检查（不会出纸、不改任何设置），结果逐行显示在 **自检日志** 页签：`[ OK ]` 通过、`[INFO]` 提示、`[WARN]` 警告、`[FAIL]` 失败，失败/警告项后面带「解决方案」。日志可 Ctrl+A、Ctrl+C 复制发给技术支持。
+
+| 检查项 | 检查内容 |
+|--------|----------|
+| 兼容服务 | 8000 / 18000 / 8443 / 8444 是否都在监听 |
+| 旧版 C-Lodop | 是否有正在运行、已安装或开机自启的真实 C-Lodop（会抢端口，MZL 的请求会被它接走） |
+| 打印机 | MZL 兼容行是否选了打印机，本机是否装了它 |
+| HTTP 脚本 | `localhost:8000/18000` 返回的是否是本程序的脚本 |
+| 域名 | `localhost.lodop.net` 是否解析到 127.0.0.1（https 站点必需；路由器/DNS 的重绑定保护会屏蔽它） |
+| 系统代理 | 系统代理或 PAC 是否会接管对 `localhost.lodop.net` 的访问 |
+| HTTPS 证书 | 8443/8444 的证书是否被信任 |
+| 浏览器 | Chrome / Edge 版本，是否已通过策略（`LocalNetworkAccessAllowedForUrls`）放行 MZL |
+| 站点权限 | 读取浏览器配置里 MZL 站点的「本地网络 / 本机应用」权限（按用户配置分别判断，**仅供参考**） |
+| 自动设置浏览器 | 本机是否允许程序写入浏览器策略；不允许只是程序不能自动放行，**不影响打印** |
+| 浏览器请求 | 自程序启动以来，来自网页的请求是否真的到达本程序（在地址栏手动打开链接不计入） |
+
+**典型用法：** 先点 ⚙ 看哪项不是 `[ OK ]` 并按提示处理；然后在 MZL 页面按 F5 刷新、点一次打印，再点 ⚙。「浏览器请求」一项能直接说明请求有没有到达本程序：没到达说明被浏览器拦截或域名/证书/代理有问题；到达了但没打印，则看运行日志和失败日志。
+
+**一键放行浏览器：** 当「浏览器」一项出现警告时，自检日志上方的 **一键放行浏览器（需管理员）** 按钮可用。点击后弹出 Windows 管理员确认窗口，确认后把 MZL 的域名追加到 Chrome 和 Edge 的 `LocalNetworkAccessAllowedForUrls`（只追加，不覆盖已有条目），完成后**彻底关闭并重新打开浏览器**，再点 ⚙ 重新自检。脚本内容直接通过 PowerShell 命令行传入，不从磁盘读取文件，程序本身不需要管理员权限。若被公司的 AppLocker / 脚本禁用策略拦截，日志会提示让 IT 在组策略里添加同名策略。
 
 ## 测试
 
@@ -295,24 +320,30 @@ curl -X POST http://localhost:48212/LabelPrint \
 LabelPrinter/
 ├── Program.cs / TrayApplicationContext.cs / SettingsForm.cs / Config.cs
 ├── PrintHostService.cs / FileLog.cs
+├── PreviousInstance.cs             # 重复启动时识别并接管旧版
 ├── Services/
 │   ├── WebSocketPrintListener.cs / RestPrintListener.cs
 │   ├── LodopCompatListener.cs      # C-Lodop 兼容 HTTP/HTTPS
 │   ├── LodopPrintQueue.cs          # 入队 + 串行打印 + 落盘续打
 │   ├── LodopQueueStore.cs / LodopFailureStore.cs / LodopFailureReport.cs
 │   ├── LodopCompatCertificate.cs / LodopLoopbackHttpsServer.cs
+│   ├── MzlSelfCheck.cs             # MZL 兼容性自检 + 一键放行浏览器
+│   ├── BrowserSitePermissions.cs   # 读取浏览器站点权限
+│   ├── LodopRequestStats.cs        # 统计来自网页的请求
 │   └── NetworkHelper.cs / BrowserLocalAccessPolicy.cs
-└── Printing/                       # PrintModel、RAW、LPT、样张生成等
+├── Printing/                       # PrintModel、RAW、LPT、样张生成等
+└── LabelPrinter.Tests/             # xUnit 单元测试
 ```
 
 ## 常见问题
 
 **MZL「打印运单」没反应**
 
-- 确认设置里 **MZL 兼容** 已启用并选了打印机，点该行 **测试**
-- 浏览器与本程序同一台电脑；不要同时装真实 C-Lodop
-- https 站点：确认证书已信任，必要时重启浏览器
-- Chrome 仍拦截本机：见上文 `local-network-access-check`
+- **先点设置窗口右上角的 ⚙ 做自检**，按失败/警告项后面的解决方案处理（见上文「MZL 兼容性自检」）
+- 确认设置里 **MZL 兼容** 已启用并选了打印机，点该行 **测试**（测试能出纸，说明程序和打印机没问题，问题在浏览器到程序这一段）
+- 浏览器与本程序同一台电脑、同一个 Windows 用户；不要同时装真实 C-Lodop
+- https 站点：确认域名 `localhost.lodop.net` 能解析、证书已信任，必要时重启浏览器
+- Chrome / Edge 拦截本机访问：在 MZL 页面把「本地网络 / 本机应用」设为「允许」，或用自检里的「一键放行浏览器」
 - 打开设置 → 运行日志 / 失败日志，或查看 `logs/labelprinter-<日期>.log`
 
 **REST 接口无法访问**
